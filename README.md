@@ -1,9 +1,11 @@
 # did0
 
-[![CI](https://github.com/kiruthikraaj/did0/actions/workflows/ci.yml/badge.svg)](https://github.com/kiruthikraaj/did0/actions/workflows/ci.yml)
+[![CI](https://github.com/did0-project/did0/actions/workflows/ci.yml/badge.svg)](https://github.com/did0-project/did0/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@did0/core.svg)](https://www.npmjs.com/package/@did0/core)
+[![PyPI](https://img.shields.io/pypi/v/did0-py.svg)](https://pypi.org/project/did0-py/)
+[![Crates.io](https://img.shields.io/crates/v/did0.svg)](https://crates.io/crates/did0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-orange.svg)](https://ziglang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-20%2B%20%7C%2022%2B%20%7C%2024%2B-green.svg)](https://nodejs.org/)
 
 A zero-allocation Decentralized Identifier (DID) resolver, cryptographic verification engine, and identity toolkit built in **Zig** and optimized for **peaq Network** and enterprise **DePIN** (Decentralized Physical Infrastructure Networks).
 
@@ -78,7 +80,7 @@ This compiles `src/napi.zig` in `ReleaseFast` mode and outputs `did0.node`.
 Generate cryptographically secure BIP-39 mnemonics, compute PBKDF2 seeds, and derive peaq Ed25519 keypairs and Substrate SS58 addresses:
 
 ```typescript
-import { createWallet, generateMnemonic, validateMnemonic } from 'did0';
+import { createWallet, generateMnemonic, validateMnemonic } from '@did0/core';
 
 // Generate a random 12-word or 24-word mnemonic
 const mnemonic = generateMnemonic(12);
@@ -104,7 +106,7 @@ const restored = createWallet({
 Canonicalize JSON according to RFC 8785 (lexicographical UTF-16 code unit property sorting) and sign Verifiable Credentials:
 
 ```typescript
-import { canonicalize, issueCredential, verifySignature } from 'did0';
+import { canonicalize, issueCredential, verifySignature } from '@did0/core';
 
 const credential = {
   "@context": [
@@ -140,7 +142,7 @@ console.log("Verified:", isValid); // true
 Construct Substrate-compatible bytecodes for on-chain DID creation and attribute updates without heavy JavaScript libraries:
 
 ```typescript
-import { encodeDidAttribute, encodeAddAttributeCall } from 'did0';
+import { encodeDidAttribute, encodeAddAttributeCall } from '@did0/core';
 
 const didAccountHex = wallet.publicKeyHex; // 32-byte AccountId
 const attributeName = "did/pubkey";
@@ -173,7 +175,7 @@ const callBytes = encodeAddAttributeCall(
 Parse incoming peaq DID Documents with zero heap allocations:
 
 ```typescript
-import { parseDID } from 'did0';
+import { parseDID } from '@did0/core';
 
 const rawDocument = JSON.stringify({
   id: "did:peaq:5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
@@ -200,7 +202,7 @@ console.log(doc.publicKeyMultibase); // "zH3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3
 Here is how an IoT device (e.g., an EV charging station) executes its complete identity lifecycle in under 5 milliseconds:
 
 ```typescript
-import { createWallet, issueCredential, canonicalize, verifySignature, encodeDidAttribute } from 'did0';
+import { createWallet, issueCredential, canonicalize, verifySignature, encodeDidAttribute } from '@did0/core';
 
 // 1. Hardware Gateway initializes identity off-heap
 const gateway = createWallet();

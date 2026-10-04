@@ -112,7 +112,7 @@ function preparePackages() {
       'utf8'
     );
 
-    const readmeContent = `# ${plat.pkgName}\n\nThis is the platform-specific precompiled native Node-API binary of **\`did0\`** for **${plat.description}**.\n\nInstall the main package:\n\`\`\`bash\nnpm install did0\n\`\`\`\n`;
+    const readmeContent = `# ${plat.pkgName}\n\nThis is the platform-specific precompiled native Node-API binary of **\`@did0/core\`** for **${plat.description}**.\n\nInstall the main package:\n\`\`\`bash\nnpm install @did0/core\n\`\`\`\n`;
     fs.writeFileSync(path.join(pkgDir, 'README.md'), readmeContent, 'utf8');
 
     const srcArtifact = path.join(PREBUILDS_DIR, plat.artifactName);
