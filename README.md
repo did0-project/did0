@@ -43,6 +43,23 @@ Requires Node.js 20+. Prebuilt binaries are installed automatically for:
 
 Windows is not supported yet. If your platform has no binary, the loader throws an error that names the missing package (check that you did not install with `--no-optional`).
 
+### Using from Zig
+
+Zig packages are fetched straight from git, so there is no registry to publish to:
+
+```bash
+zig fetch --save=did0 https://github.com/did0-project/did0/archive/refs/tags/v0.2.0.tar.gz
+```
+
+Then in your `build.zig`:
+
+```zig
+const did0 = b.dependency("did0", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("did0", did0.module("did0"));
+```
+
+and `const did0 = @import("did0");` in your code (`did0.wallet`, `did0.jcs`, `did0.scale`, `did0.peaq`).
+
 ### Build from source
 
 Requires [Zig 0.16.0](https://ziglang.org/download/).
@@ -181,7 +198,7 @@ tests/              Known-answer, negative, and differential tests
 scripts/            Multi-platform build and publish helpers
 ```
 
-You can also use the Zig modules directly: add the package to `build.zig.zon` and `@import("did0")`.
+The Zig modules can be used directly; see [Using from Zig](#using-from-zig).
 
 ## Testing
 

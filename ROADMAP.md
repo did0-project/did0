@@ -17,7 +17,7 @@ did0 is pre-1.0. This is the direction, not a promise; priorities follow what pe
 - WebAssembly build for edge runtimes and browsers.
 - W3C Data Integrity `eddsa-jcs-2022` proofs so credentials interoperate with other VC libraries.
 - SCALE *decoding* and DID document assembly from on-chain attributes.
-- Pure-Zig and C ABI packaging for use outside Node.js.
+- A C ABI and header, which would also enable a Rust crate (`did0-sys` / `did0`) on crates.io and bindings for Python and Go. Planned if there is demand; there is no crates.io or PyPI package today.
 - Independent security review.
 
 ## Not planned
