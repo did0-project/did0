@@ -2,14 +2,13 @@
 
 ## Status
 
-did0 is **alpha software and has not been independently audited**. Do not use it to protect keys that control real value until it has been reviewed. Pin exact versions and read the [changelog](CHANGELOG.md) before upgrading: key-derivation and encoding behaviour changed between 0.1.x and 0.2.0.
+did0 is **alpha software and has not been independently audited**. Do not use it to protect keys that control real value until it has been reviewed. Pin exact versions and read the [changelog](CHANGELOG.md) before upgrading; breaking changes are possible in any 0.x release.
 
 ## Supported versions
 
 | Version | Supported |
 | :--- | :--- |
-| 0.2.x | yes |
-| 0.1.x | no. Derives different keys from the same mnemonic; deprecated on npm. |
+| 0.1.x | yes |
 
 ## What the library tries to guarantee
 

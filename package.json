@@ -1,6 +1,6 @@
 {
   "name": "@did0/core",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Zero-Allocation W3C DID Resolver, Cryptographic Engine & DePIN Identity Toolkit in Zig",
   "main": "index.js",
   "module": "index.mjs",

@@ -2,7 +2,7 @@
 
 did0 is pre-1.0. This is the direction, not a promise; priorities follow what peaq and DePIN developers need. Open an issue to discuss or to claim an item.
 
-## Next (0.3)
+## Next (0.2)
 
 - **Interop tests against a live peaq node** (agung testnet) in CI: build an `add_attribute` call, submit it with polkadot-js, read the DID back.
 - **Derivation paths** (`//hard`, `/soft`) for Ed25519, matching polkadot-js.
