@@ -57,12 +57,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kiruthikraaj/did0.git"
+    "url": "git+https://github.com/did0-project/did0.git"
   },
   "bugs": {
-    "url": "https://github.com/kiruthikraaj/did0/issues"
+    "url": "https://github.com/did0-project/did0/issues"
   },
-  "homepage": "https://github.com/kiruthikraaj/did0#readme",
+  "homepage": "https://did0.org",
   "dependencies": {
     "bs58": "^6.0.0"
   },
