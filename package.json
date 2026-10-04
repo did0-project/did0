@@ -1,0 +1,56 @@
+{
+  "name": "did0",
+  "version": "0.1.0",
+  "description": "Zero-Allocation W3C DID Resolver, Cryptographic Engine & DePIN Identity Toolkit in Zig",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "did0.node",
+    "build.zig",
+    "build.zig.zon",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "npm run build:release",
+    "build:debug": "zig build addon && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
+    "build:release": "zig build addon -Doptimize=ReleaseFast && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
+    "test:unit": "zig build test",
+    "test:integration": "node --test tests/*.test.js",
+    "test": "npm run test:unit && npm run test:integration",
+    "benchmark": "node benchmark.js",
+    "format": "zig fmt src/*.zig src/peaq/*.zig build.zig"
+  },
+  "keywords": [
+    "did",
+    "w3c-did",
+    "depin",
+    "peaq",
+    "substrate",
+    "scale-codec",
+    "verifiable-credentials",
+    "jcs",
+    "rfc8785",
+    "bip39",
+    "ed25519",
+    "zero-allocation",
+    "zig",
+    "n-api"
+  ],
+  "author": "Kiruthik Raaj",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kiruthikraaj/did0.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kiruthikraaj/did0/issues"
+  },
+  "homepage": "https://github.com/kiruthikraaj/did0#readme",
+  "dependencies": {
+    "bs58": "^6.0.0"
+  }
+}
