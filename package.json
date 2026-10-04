@@ -33,7 +33,7 @@
     "prepare:packages": "node scripts/prepare-platform-packages.js",
     "test:unit": "zig build test",
     "test:integration": "node --test tests/*.test.js tests/*.test.mjs",
-    "test": "npm run test:unit && npm run test:integration",
+    "test": "npm run build:release && npm run test:unit && npm run test:integration",
     "benchmark": "node benchmark.js",
     "format": "zig fmt src/*.zig src/peaq/*.zig build.zig"
   },

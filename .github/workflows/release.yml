@@ -86,7 +86,7 @@ jobs:
             if [ -d "$dir" ]; then
               echo "Publishing $dir..."
               cd "$dir"
-              npm publish --provenance --access public
+              npm publish --access public
               cd - > /dev/null
             fi
           done

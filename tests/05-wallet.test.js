@@ -11,8 +11,9 @@ test('Phase 4: BIP-39 Mnemonic Generation & Validation', () => {
   assert.strictEqual(mnemonic24.split(' ').length, 24, "Should generate 24 words");
   assert.strictEqual(did0.validateMnemonic(mnemonic24), true, "24-word mnemonic must be valid");
 
-  const corrupted = mnemonic12.split(' ').slice(0, 11).join(' ') + " abandon";
-  assert.strictEqual(did0.validateMnemonic(corrupted), false, "Corrupted checksum must fail validation");
+  // 12 "abandon"s has an invalid checksum (zero entropy requires "about" as 12th word)
+  const invalidChecksumMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon";
+  assert.strictEqual(did0.validateMnemonic(invalidChecksumMnemonic), false, "Corrupted checksum must fail validation");
   assert.strictEqual(did0.validateMnemonic("notaword in the list"), false, "Invalid vocabulary must fail validation");
 });
 
