@@ -52,3 +52,50 @@ test('Phase 2: Substrate SCALE Encoding for peaq DID attributes and calls', () =
   assert.strictEqual(encodedRemove[1], 2);
   assert.strictEqual(encodedRemove.subarray(2, 34).toString('hex'), didAccountHex);
 });
+
+test('Phase 2: validity is an Option<u32> matching the peaq-did pallet (valid_for)', () => {
+  const account = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  // name "n" and value "v" are compact-length-prefixed: 0x04 'n', 0x04 'v'
+  const none = did0.encodeDidAttribute(account, 'n', 'v', null);
+  assert.strictEqual(none.subarray(32).toString('hex'), '046e' + '0476' + '00');
+  assert.strictEqual(did0.encodeDidAttribute(account, 'n', 'v', undefined).toString('hex'), none.toString('hex'));
+
+  // Some(1_000_000) = 0x01 ++ 0x000f4240 little-endian
+  const some = did0.encodeDidAttribute(account, 'n', 'v', 1_000_000);
+  assert.strictEqual(some.subarray(32).toString('hex'), '046e' + '0476' + '01' + '40420f00');
+
+  // Some(0) is distinct from None
+  assert.strictEqual(did0.encodeDidAttribute(account, 'n', 'v', 0).subarray(32).toString('hex'), '046e04760100000000');
+});
+
+test('Phase 2: SCALE compact length boundaries', () => {
+  const account = "00".repeat(32);
+  // single-byte mode: len 63 -> prefix 0xfc; two-byte mode: len 64 -> 0x0101
+  const v63 = did0.encodeDidAttribute(account, 'n', 'a'.repeat(63), null);
+  assert.strictEqual(v63[32 + 2], 0xfc);
+  const v64 = did0.encodeDidAttribute(account, 'n', 'a'.repeat(64), null);
+  assert.deepStrictEqual([...v64.subarray(34, 36)], [0x01, 0x01]);
+});
+
+test('Phase 2: invalid arguments are rejected instead of truncated or wrapped', () => {
+  const account = "00".repeat(32);
+  const call = (...a) => did0.encodeAddAttributeCall(...a);
+
+  assert.throws(() => call(256, 0, account, 'n', 'v', 1), /palletIndex/);
+  assert.throws(() => call(-1, 0, account, 'n', 'v', 1), /palletIndex/);
+  assert.throws(() => call(1.5, 0, account, 'n', 'v', 1), /palletIndex/);
+  assert.throws(() => call(1, 256, account, 'n', 'v', 1), /callIndex/);
+  assert.throws(() => call(1, 0, account, 'n', 'v', -1), /validityBlocks/);
+  assert.throws(() => call(1, 0, account, 'n', 'v', 2 ** 32), /validityBlocks/);
+  assert.throws(() => call(1, 0, account, 'n', 'v', 'soon'), /validityBlocks/);
+  assert.throws(() => call(1, 0, 'zz'.repeat(32), 'n', 'v', 1), /Account ID/);
+  assert.throws(() => call(1, 0, '00'.repeat(31), 'n', 'v', 1), /Account ID/);
+  assert.throws(() => call(1, 0, account, 'n'.repeat(256), 'v', 1), /name/);
+  assert.throws(() => call(1, 0, account, 'n', 'v'.repeat(8192), 1), /value/);
+  assert.throws(() => call(1, 0, account, 5, 'v', 1), /name/);
+  assert.throws(() => did0.encodeRemoveAttributeCall(1, 3, account, 'n'.repeat(256)), /name/);
+
+  // Boundary values that must succeed
+  assert.ok(call(255, 255, account, 'n'.repeat(255), 'v'.repeat(8191), 2 ** 32 - 1));
+});

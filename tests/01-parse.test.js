@@ -29,3 +29,18 @@ test('Phase 1: W3C DID Document Parsing', () => {
     "Multibase public key must match input"
   );
 });
+
+test('Phase 1: DID parsing rejects malformed input', () => {
+  assert.throws(() => did0.parseDID('not json'), /Failed to parse/);
+  assert.throws(() => did0.parseDID('{}'), /Failed to parse/, 'id is required');
+  assert.throws(() => did0.parseDID('{"id":'), /Failed to parse/);
+  assert.throws(() => did0.parseDID(JSON.stringify({ id: 'did:peaq:' + 'a'.repeat(5000) })), /at most 4095/);
+  assert.throws(() => did0.parseDID(), /Expected/);
+  assert.throws(() => did0.parseDID(123), /at most 4095|JSON string/);
+});
+
+test('Phase 1: DID parsing tolerates unknown fields and absent keys', () => {
+  const parsed = did0.parseDID(JSON.stringify({ id: 'did:peaq:5abc', '@context': ['x'], extra: { deep: [1, 2] } }));
+  assert.strictEqual(parsed.id, 'did:peaq:5abc');
+  assert.strictEqual('publicKeyMultibase' in parsed, false);
+});

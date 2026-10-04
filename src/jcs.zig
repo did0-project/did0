@@ -7,8 +7,13 @@ pub const Error = error{
     InvalidUnicode,
     InvalidNumber,
     UnexpectedToken,
+    DuplicateKey,
+    TooDeep,
     OutOfMemory,
 };
+
+/// Maximum nesting depth accepted by the parser (guards the native stack against hostile input).
+pub const max_depth = 128;
 
 /// Lightweight AST for JSON values parsed into a caller-owned FixedBufferAllocator.
 pub const Value = union(enum) {
@@ -86,52 +91,82 @@ pub fn formatEcmaNumber(buf: []u8, val: f64) Error![]const u8 {
     if (std.math.isNan(val) or std.math.isInf(val)) {
         return Error.InvalidNumber;
     }
-    // Handle -0.0 and +0.0
+    // -0.0 and +0.0 both serialize as "0"
     if (val == 0.0) {
         if (buf.len < 1) return Error.BufferTooSmall;
         buf[0] = '0';
         return buf[0..1];
     }
 
+    var w: usize = 0;
     var v = val;
-    var offset: usize = 0;
     if (v < 0) {
         if (buf.len < 1) return Error.BufferTooSmall;
         buf[0] = '-';
-        offset = 1;
+        w = 1;
         v = -v;
     }
 
-    // Check if integer in range [1, 1e21)
-    if (@floor(v) == v and v < 1e21) {
-        const int_val: u128 = @intFromFloat(v);
-        const printed = std.fmt.bufPrint(buf[offset..], "{d}", .{int_val}) catch return Error.BufferTooSmall;
-        return buf[0 .. offset + printed.len];
-    }
-
+    // Shortest round-trip digits in scientific form, e.g. "4.7287639067508275e-6".
     var temp: [64]u8 = undefined;
     const e_str = std.fmt.bufPrint(&temp, "{e}", .{v}) catch return Error.BufferTooSmall;
-    const e_idx = std.mem.indexOfScalar(u8, e_str, 'e') orelse {
-        const printed = std.fmt.bufPrint(buf[offset..], "{s}", .{e_str}) catch return Error.BufferTooSmall;
-        return buf[0 .. offset + printed.len];
-    };
+    const e_idx = std.mem.indexOfScalar(u8, e_str, 'e') orelse return Error.InvalidNumber;
+    const exp = std.fmt.parseInt(i32, e_str[e_idx + 1 ..], 10) catch return Error.InvalidNumber;
 
-    const mantissa = e_str[0..e_idx];
-    const exp_str = e_str[e_idx + 1 ..];
-    const exp = std.fmt.parseInt(i32, exp_str, 10) catch return Error.InvalidNumber;
-
-    if (exp > -6 and exp <= 20) {
-        const d_str = std.fmt.bufPrint(buf[offset..], "{d}", .{v}) catch return Error.BufferTooSmall;
-        return buf[0 .. offset + d_str.len];
-    } else {
-        if (exp >= 0) {
-            const printed = std.fmt.bufPrint(buf[offset..], "{s}e+{d}", .{ mantissa, exp }) catch return Error.BufferTooSmall;
-            return buf[0 .. offset + printed.len];
-        } else {
-            const printed = std.fmt.bufPrint(buf[offset..], "{s}e-{d}", .{ mantissa, -exp }) catch return Error.BufferTooSmall;
-            return buf[0 .. offset + printed.len];
-        }
+    var digits_buf: [32]u8 = undefined;
+    var k: usize = 0;
+    for (e_str[0..e_idx]) |c| {
+        if (c == '.') continue;
+        if (k >= digits_buf.len) return Error.InvalidNumber;
+        digits_buf[k] = c;
+        k += 1;
     }
+    const digits = digits_buf[0..k];
+    // ECMAScript Number::toString: value = 0.d1d2...dk * 10^n
+    const n: i32 = exp + 1;
+    const kk: i32 = @intCast(k);
+
+    const Writer = struct {
+        buf: []u8,
+        pos: *usize,
+        fn put(self: @This(), bytes: []const u8) Error!void {
+            if (self.pos.* + bytes.len > self.buf.len) return Error.BufferTooSmall;
+            @memcpy(self.buf[self.pos.*..][0..bytes.len], bytes);
+            self.pos.* += bytes.len;
+        }
+        fn zeros(self: @This(), count: usize) Error!void {
+            if (self.pos.* + count > self.buf.len) return Error.BufferTooSmall;
+            @memset(self.buf[self.pos.*..][0..count], '0');
+            self.pos.* += count;
+        }
+    };
+    const wr = Writer{ .buf = buf, .pos = &w };
+
+    if (kk <= n and n <= 21) {
+        try wr.put(digits);
+        try wr.zeros(@intCast(n - kk));
+    } else if (0 < n and n <= 21) {
+        const un: usize = @intCast(n);
+        try wr.put(digits[0..un]);
+        try wr.put(".");
+        try wr.put(digits[un..]);
+    } else if (-6 < n and n <= 0) {
+        try wr.put("0.");
+        try wr.zeros(@intCast(-n));
+        try wr.put(digits);
+    } else {
+        const e = n - 1;
+        try wr.put(digits[0..1]);
+        if (k > 1) {
+            try wr.put(".");
+            try wr.put(digits[1..]);
+        }
+        var eb: [16]u8 = undefined;
+        const e_txt = std.fmt.bufPrint(&eb, "e{s}{d}", .{ if (e < 0) "-" else "+", @abs(e) }) catch return Error.BufferTooSmall;
+        try wr.put(e_txt);
+    }
+
+    return buf[0..w];
 }
 
 // ----------------------------------------------------------------------------
@@ -142,6 +177,7 @@ pub const Parser = struct {
     allocator: std.mem.Allocator,
     input: []const u8,
     pos: usize = 0,
+    depth: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, input: []const u8) Parser {
         return .{
@@ -178,8 +214,12 @@ pub const Parser = struct {
                 return Value{ .string = str };
             },
             '-', '0'...'9' => return self.parseNumber(),
-            '[' => return self.parseArray(),
-            '{' => return self.parseObject(),
+            '[', '{' => {
+                if (self.depth >= max_depth) return Error.TooDeep;
+                self.depth += 1;
+                defer self.depth -= 1;
+                return if (c == '[') self.parseArray() else self.parseObject();
+            },
             else => return Error.UnexpectedToken,
         }
     }
@@ -281,6 +321,9 @@ pub const Parser = struct {
                     },
                     else => return Error.InvalidJson,
                 }
+            } else if (c < 0x20) {
+                // Raw control characters must be escaped in JSON strings
+                return Error.InvalidJson;
             } else {
                 try unescaped_list.append(self.allocator, c);
                 self.pos += 1;
@@ -289,22 +332,39 @@ pub const Parser = struct {
         return Error.InvalidJson;
     }
 
+    /// Strict RFC 8259 number grammar: -? (0 | [1-9][0-9]*) (. [0-9]+)? ([eE] [+-]? [0-9]+)?
     fn parseNumber(self: *Parser) Error!Value {
         self.skipWhitespace();
         const start = self.pos;
-        if (self.pos < self.input.len and self.input[self.pos] == '-') {
-            self.pos += 1;
+        const in = self.input;
+        var p = self.pos;
+
+        if (p < in.len and in[p] == '-') p += 1;
+        if (p >= in.len) return Error.InvalidNumber;
+        if (in[p] == '0') {
+            p += 1;
+        } else if (in[p] >= '1' and in[p] <= '9') {
+            while (p < in.len and in[p] >= '0' and in[p] <= '9') p += 1;
+        } else {
+            return Error.InvalidNumber;
         }
-        while (self.pos < self.input.len) {
-            const c = self.input[self.pos];
-            if ((c >= '0' and c <= '9') or c == '.' or c == 'e' or c == 'E' or c == '+' or c == '-') {
-                self.pos += 1;
-            } else {
-                break;
-            }
+        if (p < in.len and in[p] == '.') {
+            p += 1;
+            const frac_start = p;
+            while (p < in.len and in[p] >= '0' and in[p] <= '9') p += 1;
+            if (p == frac_start) return Error.InvalidNumber;
         }
-        const slice = self.input[start..self.pos];
-        const val = std.fmt.parseFloat(f64, slice) catch return Error.InvalidNumber;
+        if (p < in.len and (in[p] == 'e' or in[p] == 'E')) {
+            p += 1;
+            if (p < in.len and (in[p] == '+' or in[p] == '-')) p += 1;
+            const exp_start = p;
+            while (p < in.len and in[p] >= '0' and in[p] <= '9') p += 1;
+            if (p == exp_start) return Error.InvalidNumber;
+        }
+
+        self.pos = p;
+        const val = std.fmt.parseFloat(f64, in[start..p]) catch return Error.InvalidNumber;
+        if (std.math.isInf(val)) return Error.InvalidNumber;
         return Value{ .number = val };
     }
 
@@ -316,12 +376,13 @@ pub const Parser = struct {
         var list: std.ArrayListUnmanaged(Value) = .empty;
         errdefer list.deinit(self.allocator);
 
+        self.skipWhitespace();
+        if (self.pos < self.input.len and self.input[self.pos] == ']') {
+            self.pos += 1;
+            return Value{ .array = list.toOwnedSlice(self.allocator) catch return Error.OutOfMemory };
+        }
+
         while (true) {
-            self.skipWhitespace();
-            if (self.pos < self.input.len and self.input[self.pos] == ']') {
-                self.pos += 1;
-                break;
-            }
             const elem = try self.parseValue();
             try list.append(self.allocator, elem);
 
@@ -347,12 +408,13 @@ pub const Parser = struct {
         var members: std.ArrayListUnmanaged(Member) = .empty;
         errdefer members.deinit(self.allocator);
 
+        self.skipWhitespace();
+        if (self.pos < self.input.len and self.input[self.pos] == '}') {
+            self.pos += 1;
+            return Value{ .object = members.toOwnedSlice(self.allocator) catch return Error.OutOfMemory };
+        }
+
         while (true) {
-            self.skipWhitespace();
-            if (self.pos < self.input.len and self.input[self.pos] == '}') {
-                self.pos += 1;
-                break;
-            }
             const key = try self.parseString();
 
             self.skipWhitespace();
@@ -375,6 +437,12 @@ pub const Parser = struct {
 
         const slice = members.toOwnedSlice(self.allocator) catch return Error.OutOfMemory;
         sortMembers(slice);
+        // Duplicate names make the signed document ambiguous between parsers; reject them.
+        if (slice.len > 1) {
+            for (slice[1..], 0..) |m, i| {
+                if (std.mem.eql(u8, m.name, slice[i].name)) return Error.DuplicateKey;
+            }
+        }
         return Value{ .object = slice };
     }
 };
@@ -473,8 +541,11 @@ pub const Serializer = struct {
 /// Fully zero-allocation Canonicalization function.
 /// Parses and sorts JSON in stack-allocated FixedBufferAllocator and outputs canonical UTF-8 bytes.
 pub fn canonicalize(allocator: std.mem.Allocator, input_json: []const u8, out_buf: []u8) Error![]const u8 {
+    if (!std.unicode.utf8ValidateSlice(input_json)) return Error.InvalidUnicode;
     var parser = Parser.init(allocator, input_json);
     const ast = try parser.parseValue();
+    parser.skipWhitespace();
+    if (parser.pos != input_json.len) return Error.UnexpectedToken;
     var serializer = Serializer.init(out_buf);
     try serializer.serialize(ast);
     return serializer.buffer[0..serializer.offset];
@@ -566,4 +637,37 @@ test "JCS signCanonical and verify" {
 
     const sig = Ed25519.Signature.fromBytes(sig_bytes);
     try sig.verify(&digest, key_pair.public_key);
+}
+
+test "formatEcmaNumber follows ECMAScript Number::toString" {
+    var buf: [64]u8 = undefined;
+    const cases = [_]struct { v: f64, s: []const u8 }{
+        .{ .v = 0.0, .s = "0" },
+        .{ .v = -0.0, .s = "0" },
+        .{ .v = 1.0, .s = "1" },
+        .{ .v = -1.5, .s = "-1.5" },
+        .{ .v = 0.000001, .s = "0.000001" },
+        .{ .v = 0.0000001, .s = "1e-7" },
+        .{ .v = -4.7287639067508275e-6, .s = "-0.0000047287639067508275" },
+        .{ .v = 123456789012345680000.0, .s = "123456789012345680000" },
+        .{ .v = 1e21, .s = "1e+21" },
+        .{ .v = 1.5e300, .s = "1.5e+300" },
+        .{ .v = 5e-324, .s = "5e-324" },
+        .{ .v = 9007199254740992.0, .s = "9007199254740992" },
+        .{ .v = 333333333.33333329, .s = "333333333.3333333" },
+    };
+    for (cases) |c| try std.testing.expectEqualStrings(c.s, try formatEcmaNumber(&buf, c.v));
+    try std.testing.expectError(Error.InvalidNumber, formatEcmaNumber(&buf, std.math.inf(f64)));
+}
+
+test "canonicalize rejects ambiguous or malformed documents" {
+    var stack_buf: [8192]u8 = undefined;
+    var out: [1024]u8 = undefined;
+    const bad = [_][]const u8{ "[1,]", "{\"a\":1,}", "{\"a\":1,\"a\":2}", "[01]", "[1.]", "{} x", "\"a\tb\"", "\"\\ud800\"" };
+    for (bad) |doc| {
+        var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+        try std.testing.expect(std.meta.isError(canonicalize(fba.allocator(), doc, &out)));
+    }
+    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    try std.testing.expectError(Error.InvalidUnicode, canonicalize(fba.allocator(), "\"\xff\"", &out));
 }

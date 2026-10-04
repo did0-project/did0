@@ -7,6 +7,8 @@ const did0 = require('./index.js');
 export const {
   parseDID,
   verifySignature,
+  verifyDigestSignature,
+  verifyCredential,
   encodeDidAttribute,
   encodeAddAttributeCall,
   encodeUpdateAttributeCall,

@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     const GREEN = "\x1b[32m";
     const RESET = "\x1b[0m";
 
-    std.debug.print("{s}{s}did0 v0.1.1{s} - Zero-Allocation DID Resolver\n\n", .{ BOLD, CYAN, RESET });
+    std.debug.print("{s}{s}did0 v0.2.0{s} - Zero-Allocation DID Resolver\n\n", .{ BOLD, CYAN, RESET });
 
     // Simulated JSON payload from a peaq network RPC node
     const payload =
@@ -50,14 +50,14 @@ pub fn main(init: std.process.Init) !void {
             if (method.publicKeyMultibase) |pk_mb| {
                 std.debug.print("├─ {s}Multibase   :{s} {s}{s}{s}\n", .{ BOLD, RESET, CYAN, pk_mb, RESET });
 
-                // Decode the base58 string into raw bytes
-                if (did0.peaq.decodeMultibase(stack_allocator, pk_mb)) |raw_bytes| {
+                // Decode the multibase string into the raw 32-byte public key
+                if (did0.peaq.decodePublicKey(pk_mb)) |raw_bytes| {
                     std.debug.print("╰─ {s}Raw Ed25519 :{s} {s}", .{ BOLD, RESET, GREEN });
-                    for (raw_bytes) |b| std.debug.print("{x:0>2}", .{b});
+                    for (&raw_bytes) |b| std.debug.print("{x:0>2}", .{b});
                     std.debug.print("{s}\n", .{RESET});
 
                     // Note: If we had a challenge payload and signature from the device,
-                    // we would pass them into did0.peaq.verifySignature() right here!
+                    // we would pass them into did0.peaq.verifySignature() right here.
 
                 } else |err| {
                     std.debug.print("╰─ {s}Decode Err  :{s} {}\n", .{ BOLD, RESET, err });

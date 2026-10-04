@@ -19,8 +19,8 @@ const napi_valuetype = enum(c_int) {
 };
 
 extern "c" fn napi_get_cb_info(env: napi_env, info: napi_callback_info, argc: *usize, argv: [*]napi_value, this_arg: ?*napi_value, data: ?*anyopaque) c_int;
-extern "c" fn napi_get_value_string_utf8(env: napi_env, value: napi_value, buf: [*]u8, bufsize: usize, result: *usize) c_int;
-extern "c" fn napi_get_value_uint32(env: napi_env, value: napi_value, result: *u32) c_int;
+extern "c" fn napi_get_value_string_utf8(env: napi_env, value: napi_value, buf: ?[*]u8, bufsize: usize, result: *usize) c_int;
+extern "c" fn napi_get_value_double(env: napi_env, value: napi_value, result: *f64) c_int;
 extern "c" fn napi_create_string_utf8(env: napi_env, str: [*]const u8, length: usize, result: *napi_value) c_int;
 extern "c" fn napi_create_object(env: napi_env, result: *napi_value) c_int;
 extern "c" fn napi_create_function(env: napi_env, utf8name: ?[*]const u8, length: usize, cb: *const fn (napi_env, napi_callback_info) callconv(.c) napi_value, data: ?*anyopaque, result: *napi_value) c_int;
@@ -35,13 +35,68 @@ extern "c" fn napi_call_function(env: napi_env, recv: napi_value, func: napi_val
 extern "c" fn napi_is_buffer(env: napi_env, value: napi_value, result: *bool) c_int;
 extern "c" fn napi_get_buffer_info(env: napi_env, value: napi_value, data: *?*anyopaque, length: *usize) c_int;
 
-fn extractJsonString(env: napi_env, val: napi_value, buf: []u8) ![]const u8 {
-    var v_type: napi_valuetype = .napi_undefined;
-    _ = napi_typeof(env, val, &v_type);
+const base58 = did0.base58;
 
+fn throw(env: napi_env, code: [:0]const u8, msg: [:0]const u8) napi_value {
+    _ = napi_throw_error(env, code.ptr, msg.ptr);
+    return null;
+}
+
+fn typeOf(env: napi_env, val: napi_value) napi_valuetype {
+    var t: napi_valuetype = .napi_undefined;
+    if (napi_typeof(env, val, &t) != 0) return .napi_undefined;
+    return t;
+}
+
+/// Reads a JS string into `buf`. Returns null if the value is not a string or if it does not
+/// fit (never truncates silently, which would corrupt payloads and on-chain attributes).
+fn readString(env: napi_env, val: napi_value, buf: []u8) ?[]u8 {
+    if (typeOf(env, val) != .napi_string) return null;
+    var needed: usize = 0;
+    if (napi_get_value_string_utf8(env, val, null, 0, &needed) != 0) return null;
+    if (needed >= buf.len) return null;
+    var n: usize = 0;
+    if (napi_get_value_string_utf8(env, val, buf.ptr, buf.len, &n) != 0 or n != needed) return null;
+    return buf[0..n];
+}
+
+/// Reads a JS number that is an exact integer in 0..2^32-1 (no wrapping of negatives or fractions).
+fn readU32(env: napi_env, val: napi_value) ?u32 {
+    if (typeOf(env, val) != .napi_number) return null;
+    var d: f64 = 0;
+    if (napi_get_value_double(env, val, &d) != 0) return null;
+    if (!(d >= 0 and d <= 4294967295.0) or d != @floor(d)) return null;
+    return @intFromFloat(d);
+}
+
+/// `null`/`undefined` map to `None`; a number maps to `Some(n)`; anything else is an error.
+fn readOptionalU32(env: napi_env, val: napi_value) error{InvalidArgument}!?u32 {
+    switch (typeOf(env, val)) {
+        .napi_undefined, .napi_null => return null,
+        else => return readU32(env, val) orelse error.InvalidArgument,
+    }
+}
+
+fn readU8(env: napi_env, val: napi_value) ?u8 {
+    const v = readU32(env, val) orelse return null;
+    if (v > 255) return null;
+    return @intCast(v);
+}
+
+/// Reads a 64-character hex string as a 32-byte AccountId.
+fn readAccountId(env: napi_env, val: napi_value) ?[32]u8 {
+    var hex: [65]u8 = undefined;
+    const s = readString(env, val, &hex) orelse return null;
+    if (s.len != 64) return null;
+    var out: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&out, s) catch return null;
+    return out;
+}
+
+fn extractJsonString(env: napi_env, val: napi_value, buf: []u8) ![]const u8 {
     var target_str_val = val;
 
-    if (v_type == .napi_object) {
+    if (typeOf(env, val) == .napi_object) {
         var global: napi_value = null;
         if (napi_get_global(env, &global) != 0) return error.NapiError;
 
@@ -55,57 +110,37 @@ fn extractJsonString(env: napi_env, val: napi_value, buf: []u8) ![]const u8 {
         if (napi_call_function(env, json_obj, stringify_fn, 1, &args, &target_str_val) != 0) return error.NapiError;
     }
 
-    var str_len: usize = 0;
-    if (napi_get_value_string_utf8(env, target_str_val, buf.ptr, buf.len, &str_len) != 0) {
-        return error.NapiError;
-    }
-    return buf[0..str_len];
+    return readString(env, target_str_val, buf) orelse error.NapiError;
 }
 
-fn decodeBase58(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    const encoded = if (input.len > 0 and input[0] == 'z') input[1..] else input;
-    const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    var decoded = try allocator.alloc(u8, 32);
-    @memset(decoded, 0);
-
-    for (encoded) |c| {
-        const char_index = std.mem.indexOfScalar(u8, alphabet, c) orelse return error.InvalidBase58Char;
-        var carry: u16 = @intCast(char_index);
-        var i: usize = decoded.len;
-        while (i > 0) {
-            i -= 1;
-            carry += @as(u16, decoded[i]) * 58;
-            decoded[i] = @truncate(carry);
-            carry >>= 8;
-        }
-    }
-    return decoded;
-}
-
-fn decodePrivateKeyBytes(allocator: std.mem.Allocator, input: []const u8) ![32]u8 {
+/// Decodes a private key given as 64-char hex (seed), 128-char hex (seed ++ pubkey),
+/// or base58 (optionally `z`-prefixed) of 32 or 64 bytes. Only the first 32 bytes (the seed) are used.
+fn decodePrivateKeyBytes(input: []const u8) ![32]u8 {
     var seed: [32]u8 = undefined;
 
-    // 1. Hex 64 chars -> 32 bytes
     if (input.len == 64) {
-        _ = std.fmt.hexToBytes(&seed, input[0..64]) catch return error.InvalidPrivateKey;
+        _ = std.fmt.hexToBytes(&seed, input) catch return error.InvalidPrivateKey;
         return seed;
     }
 
-    // 2. Hex 128 chars -> 64 bytes (first 32 bytes are seed)
     if (input.len == 128) {
         var sk64: [64]u8 = undefined;
-        _ = std.fmt.hexToBytes(&sk64, input[0..128]) catch return error.InvalidPrivateKey;
+        defer std.crypto.secureZero(u8, &sk64);
+        _ = std.fmt.hexToBytes(&sk64, input) catch return error.InvalidPrivateKey;
         @memcpy(&seed, sk64[0..32]);
         return seed;
     }
 
-    // 3. Base58 (with or without 'z' prefix)
-    const raw = decodeBase58(allocator, input) catch return error.InvalidPrivateKey;
-    if (raw.len >= 32) {
-        @memcpy(&seed, raw[0..32]);
-        return seed;
+    var buf: [96]u8 = undefined;
+    defer std.crypto.secureZero(u8, &buf);
+    const candidates = [2][]const u8{ input, if (input.len > 1 and input[0] == 'z') input[1..] else input };
+    for (candidates) |cand| {
+        const raw = base58.decode(&buf, cand) catch continue;
+        if (raw.len == 32 or raw.len == 64) {
+            @memcpy(&seed, raw[0..32]);
+            return seed;
+        }
     }
-
     return error.InvalidPrivateKey;
 }
 
@@ -114,26 +149,20 @@ export fn parseDID_binding(env: napi_env, info: napi_callback_info) napi_value {
     var argv: [1]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 1) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected a JSON string argument");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected a JSON string argument");
     }
 
     var raw_input: [4096]u8 = undefined;
-    var input_len: usize = 0;
-    if (napi_get_value_string_utf8(env, argv[0], &raw_input, raw_input.len, &input_len) != 0) {
-        _ = napi_throw_error(env, "ERR_DECODE", "Failed to read string argument");
-        return null;
-    }
-
-    const payload = raw_input[0..input_len];
+    const payload = readString(env, argv[0], &raw_input) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "Expected a JSON string of at most 4095 bytes");
+    };
 
     var parser_buffer: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&parser_buffer);
     const stack_allocator = fba.allocator();
 
     const doc = did0.peaq.parse(stack_allocator, payload) catch {
-        _ = napi_throw_error(env, "ERR_PARSE_FAILED", "Failed to parse W3C DID document");
-        return null;
+        return throw(env, "ERR_PARSE_FAILED", "Failed to parse W3C DID document");
     };
 
     var js_doc: napi_value = null;
@@ -155,70 +184,68 @@ export fn parseDID_binding(env: napi_env, info: napi_callback_info) napi_value {
     return js_doc;
 }
 
-export fn verifySignature_binding(env: napi_env, info: napi_callback_info) napi_value {
+const VerifyMode = enum { raw, digest };
+
+fn verifyBinding(env: napi_env, info: napi_callback_info, comptime mode: VerifyMode) napi_value {
     var argc: usize = 3;
     var argv: [3]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 3) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (publicKeyMultibase, message, signatureHex)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (publicKeyMultibase, message, signatureHex)");
     }
 
     var pk_buf: [128]u8 = undefined;
-    var pk_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[0], &pk_buf, pk_buf.len, &pk_len);
+    const pk_str = readString(env, argv[0], &pk_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "publicKeyMultibase must be a string");
+    };
 
+    // The message may be a string or a Buffer. Strings are copied into a bounded buffer;
+    // Buffers are read in place.
+    var msg_buf: [65536]u8 = undefined;
+    var message: []const u8 = undefined;
     var is_buf = false;
     _ = napi_is_buffer(env, argv[1], &is_buf);
-
-    var msg_buf: [65536]u8 = undefined;
-    var msg_len: usize = 0;
-
     if (is_buf) {
         var raw_data: ?*anyopaque = null;
-        _ = napi_get_buffer_info(env, argv[1], &raw_data, &msg_len);
-        if (raw_data != null and msg_len <= msg_buf.len) {
-            const ptr: [*]const u8 = @ptrCast(raw_data.?);
-            @memcpy(msg_buf[0..msg_len], ptr[0..msg_len]);
+        var msg_len: usize = 0;
+        if (napi_get_buffer_info(env, argv[1], &raw_data, &msg_len) != 0) {
+            return throw(env, "ERR_INVALID_ARGS", "Failed to read message buffer");
+        }
+        if (msg_len == 0) {
+            message = "";
+        } else {
+            const ptr: [*]const u8 = @ptrCast(raw_data orelse return throw(env, "ERR_INVALID_ARGS", "Failed to read message buffer"));
+            message = ptr[0..msg_len];
         }
     } else {
-        _ = napi_get_value_string_utf8(env, argv[1], &msg_buf, msg_buf.len, &msg_len);
+        message = readString(env, argv[1], &msg_buf) orelse {
+            return throw(env, "ERR_INVALID_ARGS", "message must be a string under 64 KiB or a Buffer");
+        };
     }
 
-    var sig_hex: [256]u8 = undefined;
-    var sig_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[2], &sig_hex, sig_hex.len, &sig_len);
-
-    var stack_buf: [2048]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
-    const stack_allocator = fba.allocator();
-
-    // 1. Decode multibase public key into 32 raw bytes
-    const pub_key_raw = did0.peaq.decodeMultibase(stack_allocator, pk_buf[0..pk_len]) catch {
-        _ = napi_throw_error(env, "ERR_CRYPTO", "Invalid multibase public key");
-        return null;
+    var sig_hex_buf: [129]u8 = undefined;
+    const sig_hex = readString(env, argv[2], &sig_hex_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "signatureHex must be a string");
     };
-    if (pub_key_raw.len != 32) {
-        _ = napi_throw_error(env, "ERR_CRYPTO", "Expected 32-byte public key");
-        return null;
-    }
-    var pub_key_bytes: [32]u8 = undefined;
-    @memcpy(&pub_key_bytes, pub_key_raw[0..32]);
 
-    // 2. Decode hex signature into 64 raw bytes
-    if (sig_len != 128) {
-        _ = napi_throw_error(env, "ERR_CRYPTO", "Expected 128-character hex string for 64-byte signature");
-        return null;
+    const pub_key = did0.peaq.decodePublicKey(pk_str) catch {
+        return throw(env, "ERR_CRYPTO", "Invalid multibase Ed25519 public key (expected 32 bytes, optionally with the 0xed01 multicodec prefix)");
+    };
+
+    if (sig_hex.len != 128) {
+        return throw(env, "ERR_CRYPTO", "Expected 128-character hex string for 64-byte signature");
     }
     var sig_bytes: [64]u8 = undefined;
-    _ = std.fmt.hexToBytes(&sig_bytes, sig_hex[0..128]) catch {
-        _ = napi_throw_error(env, "ERR_CRYPTO", "Invalid hex in signature");
-        return null;
+    _ = std.fmt.hexToBytes(&sig_bytes, sig_hex) catch {
+        return throw(env, "ERR_CRYPTO", "Invalid hex in signature");
     };
 
-    // 3. Verify via Zig's native Ed25519 engine (supports both raw message and sha256 digest)
     var is_valid = true;
-    did0.peaq.verifySignature(pub_key_bytes, sig_bytes, msg_buf[0..msg_len]) catch {
+    const verify_fn = switch (mode) {
+        .raw => did0.peaq.verifySignature,
+        .digest => did0.peaq.verifyDigestSignature,
+    };
+    verify_fn(pub_key, sig_bytes, message) catch {
         is_valid = false;
     };
 
@@ -227,52 +254,52 @@ export fn verifySignature_binding(env: napi_env, info: napi_callback_info) napi_
     return result;
 }
 
+/// Verifies an Ed25519 signature over the raw message bytes.
+export fn verifySignature_binding(env: napi_env, info: napi_callback_info) napi_value {
+    return verifyBinding(env, info, .raw);
+}
+
+/// Verifies an Ed25519 signature over SHA-256(message), the scheme used by `issueCredential`.
+export fn verifyDigestSignature_binding(env: napi_env, info: napi_callback_info) napi_value {
+    return verifyBinding(env, info, .digest);
+}
+
 export fn encodeDidAttribute_binding(env: napi_env, info: napi_callback_info) napi_value {
     var argc: usize = 4;
     var argv: [4]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 4) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (didAccountHex, name, value, validityBlocks)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (didAccountHex, name, value, validityBlocks)");
     }
 
-    var account_hex: [128]u8 = undefined;
-    var account_hex_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[0], &account_hex, account_hex.len, &account_hex_len);
-
-    if (account_hex_len != 64) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
-        return null;
-    }
-
-    var account_bytes: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&account_bytes, account_hex[0..64]) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Invalid hex in Account ID");
-        return null;
+    const account_bytes = readAccountId(env, argv[0]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
     };
 
     var name_buf: [256]u8 = undefined;
-    var name_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[1], &name_buf, name_buf.len, &name_len);
+    const name = readString(env, argv[1], &name_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "name must be a string of at most 255 bytes");
+    };
 
     var val_buf: [8192]u8 = undefined;
-    var val_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[2], &val_buf, val_buf.len, &val_len);
+    const value = readString(env, argv[2], &val_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "value must be a string of at most 8191 bytes");
+    };
 
-    var validity: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[3], &validity);
+    const validity = readOptionalU32(env, argv[3]) catch {
+        return throw(env, "ERR_INVALID_ARGS", "validityBlocks must be a uint32, or null/undefined for no expiry");
+    };
 
     var stack_buf: [16384]u8 = undefined;
     const attr = did0.scale.DidAttribute{
         .did_account = account_bytes,
-        .name = name_buf[0..name_len],
-        .value = val_buf[0..val_len],
+        .name = name,
+        .value = value,
         .validity = validity,
     };
 
     const encoded = did0.scale.encodeDidAttribute(&stack_buf, attr) catch {
-        _ = napi_throw_error(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE encoding");
-        return null;
+        return throw(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE encoding");
     };
 
     var result: napi_value = null;
@@ -285,54 +312,45 @@ export fn encodeAddAttributeCall_binding(env: napi_env, info: napi_callback_info
     var argv: [6]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 6) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (palletIndex, callIndex, didAccountHex, name, value, validityBlocks)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (palletIndex, callIndex, didAccountHex, name, value, validityBlocks)");
     }
 
-    var pallet_index: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[0], &pallet_index);
+    const pallet_index = readU8(env, argv[0]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "palletIndex must be an integer in 0..255");
+    };
+    const call_index = readU8(env, argv[1]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "callIndex must be an integer in 0..255");
+    };
 
-    var call_index: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[1], &call_index);
-
-    var account_hex: [128]u8 = undefined;
-    var account_hex_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[2], &account_hex, account_hex.len, &account_hex_len);
-
-    if (account_hex_len != 64) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
-        return null;
-    }
-
-    var account_bytes: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&account_bytes, account_hex[0..64]) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Invalid hex in Account ID");
-        return null;
+    const account_bytes = readAccountId(env, argv[2]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
     };
 
     var name_buf: [256]u8 = undefined;
-    var name_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[3], &name_buf, name_buf.len, &name_len);
+    const name = readString(env, argv[3], &name_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "name must be a string of at most 255 bytes");
+    };
 
     var val_buf: [8192]u8 = undefined;
-    var val_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[4], &val_buf, val_buf.len, &val_len);
+    const value = readString(env, argv[4], &val_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "value must be a string of at most 8191 bytes");
+    };
 
-    var validity: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[5], &validity);
+    const validity = readOptionalU32(env, argv[5]) catch {
+        return throw(env, "ERR_INVALID_ARGS", "validityBlocks must be a uint32, or null/undefined for no expiry");
+    };
 
     var stack_buf: [16384]u8 = undefined;
     const call_bytes = did0.scale.encodeAddAttributeCall(
         &stack_buf,
-        @as(u8, @truncate(pallet_index)),
-        @as(u8, @truncate(call_index)),
+        pallet_index,
+        call_index,
         account_bytes,
-        name_buf[0..name_len],
-        val_buf[0..val_len],
+        name,
+        value,
         validity,
     ) catch {
-        _ = napi_throw_error(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE extrinsic call encoding");
-        return null;
+        return throw(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE extrinsic call encoding");
     };
 
     var result: napi_value = null;
@@ -349,45 +367,34 @@ export fn encodeRemoveAttributeCall_binding(env: napi_env, info: napi_callback_i
     var argv: [4]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 4) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (palletIndex, callIndex, didAccountHex, name)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (palletIndex, callIndex, didAccountHex, name)");
     }
 
-    var pallet_index: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[0], &pallet_index);
+    const pallet_index = readU8(env, argv[0]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "palletIndex must be an integer in 0..255");
+    };
+    const call_index = readU8(env, argv[1]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "callIndex must be an integer in 0..255");
+    };
 
-    var call_index: u32 = 0;
-    _ = napi_get_value_uint32(env, argv[1], &call_index);
-
-    var account_hex: [128]u8 = undefined;
-    var account_hex_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[2], &account_hex, account_hex.len, &account_hex_len);
-
-    if (account_hex_len != 64) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
-        return null;
-    }
-
-    var account_bytes: [32]u8 = undefined;
-    _ = std.fmt.hexToBytes(&account_bytes, account_hex[0..64]) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Invalid hex in Account ID");
-        return null;
+    const account_bytes = readAccountId(env, argv[2]) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "Expected 64-character hex string for 32-byte Account ID");
     };
 
     var name_buf: [256]u8 = undefined;
-    var name_len: usize = 0;
-    _ = napi_get_value_string_utf8(env, argv[3], &name_buf, name_buf.len, &name_len);
+    const name = readString(env, argv[3], &name_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "name must be a string of at most 255 bytes");
+    };
 
     var stack_buf: [16384]u8 = undefined;
     const call_bytes = did0.scale.encodeRemoveAttributeCall(
         &stack_buf,
-        @as(u8, @truncate(pallet_index)),
-        @as(u8, @truncate(call_index)),
+        pallet_index,
+        call_index,
         account_bytes,
-        name_buf[0..name_len],
+        name,
     ) catch {
-        _ = napi_throw_error(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE extrinsic call encoding");
-        return null;
+        return throw(env, "ERR_ENCODE_FAILED", "Buffer overflow during SCALE extrinsic call encoding");
     };
 
     var result: napi_value = null;
@@ -400,14 +407,12 @@ export fn canonicalize_binding(env: napi_env, info: napi_callback_info) napi_val
     var argv: [1]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 1) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (payload)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (payload)");
     }
 
     var raw_input: [65536]u8 = undefined;
     const json_str = extractJsonString(env, argv[0], &raw_input) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Failed to extract JSON payload");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Payload must be a JSON string or object under 64 KiB");
     };
 
     var stack_buf: [65536]u8 = undefined;
@@ -416,8 +421,7 @@ export fn canonicalize_binding(env: napi_env, info: napi_callback_info) napi_val
 
     var out_buf: [65536]u8 = undefined;
     const canon = did0.jcs.canonicalize(stack_allocator, json_str, &out_buf) catch |err| {
-        _ = napi_throw_error(env, "ERR_CANONICALIZE", @errorName(err).ptr);
-        return null;
+        return throw(env, "ERR_CANONICALIZE", @errorName(err));
     };
 
     var result: napi_value = null;
@@ -430,43 +434,37 @@ export fn issueCredential_binding(env: napi_env, info: napi_callback_info) napi_
     var argv: [2]napi_value = undefined;
 
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 2) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected (payload, privateKeyHexOrBase58)");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected (payload, privateKeyHexOrBase58)");
     }
 
     var raw_input: [65536]u8 = undefined;
     const json_str = extractJsonString(env, argv[0], &raw_input) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Failed to extract JSON payload");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Payload must be a JSON string or object under 64 KiB");
     };
 
     var key_buf: [256]u8 = undefined;
-    var key_len: usize = 0;
-    if (napi_get_value_string_utf8(env, argv[1], &key_buf, key_buf.len, &key_len) != 0 or key_len == 0) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected private key string");
-        return null;
-    }
+    defer std.crypto.secureZero(u8, &key_buf);
+    const key_str = readString(env, argv[1], &key_buf) orelse {
+        return throw(env, "ERR_INVALID_ARGS", "Expected private key string");
+    };
+    if (key_str.len == 0) return throw(env, "ERR_INVALID_ARGS", "Expected private key string");
+
+    var priv_key = decodePrivateKeyBytes(key_str) catch {
+        return throw(env, "ERR_INVALID_KEY", "Invalid private key format (expected 32/64-byte hex or base58)");
+    };
+    defer std.crypto.secureZero(u8, &priv_key);
 
     var stack_buf: [65536]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
     const stack_allocator = fba.allocator();
 
-    var priv_key = decodePrivateKeyBytes(stack_allocator, key_buf[0..key_len]) catch {
-        _ = napi_throw_error(env, "ERR_INVALID_KEY", "Invalid private key format (expected 32/64-byte hex or base58)");
-        return null;
-    };
-    defer std.crypto.secureZero(u8, &priv_key);
-    defer std.crypto.secureZero(u8, &key_buf);
-
     var out_buf: [65536]u8 = undefined;
     const canon = did0.jcs.canonicalize(stack_allocator, json_str, &out_buf) catch |err| {
-        _ = napi_throw_error(env, "ERR_CANONICALIZE", @errorName(err).ptr);
-        return null;
+        return throw(env, "ERR_CANONICALIZE", @errorName(err));
     };
 
     const sig_bytes = did0.jcs.signCanonical(canon, priv_key) catch |err| {
-        _ = napi_throw_error(env, "ERR_SIGN", @errorName(err).ptr);
-        return null;
+        return throw(env, "ERR_SIGN", @errorName(err));
     };
 
     const sig_hex = std.fmt.bytesToHex(sig_bytes, .lower);
@@ -482,17 +480,18 @@ export fn generateMnemonic_binding(env: napi_env, info: napi_callback_info) napi
     _ = napi_get_cb_info(env, info, &argc, &argv, null, null);
 
     var word_count: usize = 12;
-    if (argc >= 1) {
-        var wc_u32: u32 = 12;
-        if (napi_get_value_uint32(env, argv[0], &wc_u32) == 0) {
-            if (wc_u32 == 24) word_count = 24;
+    if (argc >= 1 and typeOf(env, argv[0]) != .napi_undefined) {
+        const wc = readU32(env, argv[0]) orelse 0;
+        if (wc != 12 and wc != 24) {
+            return throw(env, "ERR_INVALID_ARGS", "wordCount must be 12 or 24");
         }
+        word_count = wc;
     }
 
     var m_buf: [256]u8 = undefined;
+    defer std.crypto.secureZero(u8, &m_buf);
     const mnemonic = did0.wallet.generateRandomMnemonic(&m_buf, word_count) catch {
-        _ = napi_throw_error(env, "ERR_ENTROPY", "Failed to generate random mnemonic");
-        return null;
+        return throw(env, "ERR_ENTROPY", "Failed to generate random mnemonic");
     };
 
     var result: napi_value = null;
@@ -504,60 +503,61 @@ export fn validateMnemonic_binding(env: napi_env, info: napi_callback_info) napi
     var argc: usize = 1;
     var argv: [1]napi_value = undefined;
     if (napi_get_cb_info(env, info, &argc, &argv, null, null) != 0 or argc < 1) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Expected mnemonic string");
-        return null;
+        return throw(env, "ERR_INVALID_ARGS", "Expected mnemonic string");
     }
 
     var m_buf: [512]u8 = undefined;
-    var m_len: usize = 0;
-    if (napi_get_value_string_utf8(env, argv[0], &m_buf, m_buf.len, &m_len) != 0) {
-        _ = napi_throw_error(env, "ERR_INVALID_ARGS", "Failed to read mnemonic string");
-        return null;
-    }
+    defer std.crypto.secureZero(u8, &m_buf);
+    // An over-long or non-string value is simply not a valid mnemonic.
+    const is_valid = if (readString(env, argv[0], &m_buf)) |m| did0.wallet.validateMnemonic(m) else false;
 
-    const is_valid = did0.wallet.validateMnemonic(m_buf[0..m_len]);
     var result: napi_value = null;
     _ = napi_get_boolean(env, is_valid, &result);
     return result;
 }
 
 export fn createWallet_binding(env: napi_env, info: napi_callback_info) napi_value {
-    var argc: usize = 2;
-    var argv: [2]napi_value = undefined;
+    var argc: usize = 3;
+    var argv: [3]napi_value = undefined;
     _ = napi_get_cb_info(env, info, &argc, &argv, null, null);
 
     var stack_buf: [16384]u8 = undefined;
+    defer std.crypto.secureZero(u8, &stack_buf);
     var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
     const allocator = fba.allocator();
 
     var pass_buf: [256]u8 = undefined;
     defer std.crypto.secureZero(u8, &pass_buf);
-    var pass_len: usize = 0;
-    if (argc >= 1) {
-        _ = napi_get_value_string_utf8(env, argv[0], &pass_buf, pass_buf.len, &pass_len);
+    var passphrase: []const u8 = "";
+    if (argc >= 1 and typeOf(env, argv[0]) != .napi_undefined) {
+        passphrase = readString(env, argv[0], &pass_buf) orelse {
+            return throw(env, "ERR_INVALID_ARGS", "passphrase must be a string of at most 247 bytes");
+        };
     }
-    const passphrase = pass_buf[0..pass_len];
 
     var m_buf: [512]u8 = undefined;
     defer std.crypto.secureZero(u8, &m_buf);
-    var m_len: usize = 0;
-    var has_mnemonic = false;
-    if (argc >= 2) {
-        if (napi_get_value_string_utf8(env, argv[1], &m_buf, m_buf.len, &m_len) == 0 and m_len > 0) {
-            has_mnemonic = true;
-        }
+    var mnemonic: []const u8 = "";
+    if (argc >= 2 and typeOf(env, argv[1]) != .napi_undefined) {
+        mnemonic = readString(env, argv[1], &m_buf) orelse {
+            return throw(env, "ERR_INVALID_ARGS", "mnemonic must be a string of at most 511 bytes");
+        };
     }
 
-    const w = if (has_mnemonic)
-        did0.wallet.createWalletFromMnemonic(allocator, m_buf[0..m_len], passphrase) catch |err| {
-            _ = napi_throw_error(env, "ERR_WALLET", @errorName(err).ptr);
-            return null;
-        }
+    var ss58_prefix: u16 = did0.wallet.default_ss58_prefix;
+    if (argc >= 3 and typeOf(env, argv[2]) != .napi_undefined) {
+        const p = readU32(env, argv[2]) orelse 0xffff_ffff;
+        if (p >= 16384) return throw(env, "ERR_INVALID_ARGS", "ss58Prefix must be an integer in 0..16383");
+        ss58_prefix = @intCast(p);
+    }
+
+    var w = (if (mnemonic.len > 0)
+        did0.wallet.createWalletFromMnemonic(allocator, mnemonic, passphrase, ss58_prefix)
     else
-        did0.wallet.createWallet(allocator, passphrase, 12) catch |err| {
-            _ = napi_throw_error(env, "ERR_WALLET", @errorName(err).ptr);
-            return null;
-        };
+        did0.wallet.createWallet(allocator, passphrase, 12, ss58_prefix)) catch |err| {
+        return throw(env, "ERR_WALLET", @errorName(err));
+    };
+    defer std.crypto.secureZero(u8, &w.private_key_hex);
 
     var js_obj: napi_value = null;
     _ = napi_create_object(env, &js_obj);
@@ -565,11 +565,6 @@ export fn createWallet_binding(env: napi_env, info: napi_callback_info) napi_val
     var m_val: napi_value = null;
     _ = napi_create_string_utf8(env, w.mnemonic.ptr, w.mnemonic.len, &m_val);
     _ = napi_set_named_property(env, js_obj, "mnemonic", m_val);
-
-    const seed_hex = std.fmt.bytesToHex(w.seed, .lower);
-    var seed_val: napi_value = null;
-    _ = napi_create_string_utf8(env, &seed_hex, seed_hex.len, &seed_val);
-    _ = napi_set_named_property(env, js_obj, "seedHex", seed_val);
 
     var priv_val: napi_value = null;
     _ = napi_create_string_utf8(env, &w.private_key_hex, w.private_key_hex.len, &priv_val);
@@ -594,50 +589,24 @@ export fn createWallet_binding(env: napi_env, info: napi_callback_info) napi_val
     return js_obj;
 }
 
+fn register(env: napi_env, exports: napi_value, comptime name: [:0]const u8, cb: *const fn (napi_env, napi_callback_info) callconv(.c) napi_value) void {
+    var f: napi_value = null;
+    _ = napi_create_function(env, name.ptr, name.len, cb, null, &f);
+    _ = napi_set_named_property(env, exports, name.ptr, f);
+}
+
 export fn napi_register_module_v1(env: napi_env, exports: napi_value) napi_value {
-    var fn_parse: napi_value = null;
-    _ = napi_create_function(env, "parseDID", 8, parseDID_binding, null, &fn_parse);
-    _ = napi_set_named_property(env, exports, "parseDID", fn_parse);
-
-    var fn_verify: napi_value = null;
-    _ = napi_create_function(env, "verifySignature", 15, verifySignature_binding, null, &fn_verify);
-    _ = napi_set_named_property(env, exports, "verifySignature", fn_verify);
-
-    var fn_encode_attr: napi_value = null;
-    _ = napi_create_function(env, "encodeDidAttribute", 18, encodeDidAttribute_binding, null, &fn_encode_attr);
-    _ = napi_set_named_property(env, exports, "encodeDidAttribute", fn_encode_attr);
-
-    var fn_encode_call: napi_value = null;
-    _ = napi_create_function(env, "encodeAddAttributeCall", 21, encodeAddAttributeCall_binding, null, &fn_encode_call);
-    _ = napi_set_named_property(env, exports, "encodeAddAttributeCall", fn_encode_call);
-
-    var fn_update_call: napi_value = null;
-    _ = napi_create_function(env, "encodeUpdateAttributeCall", 24, encodeUpdateAttributeCall_binding, null, &fn_update_call);
-    _ = napi_set_named_property(env, exports, "encodeUpdateAttributeCall", fn_update_call);
-
-    var fn_remove_call: napi_value = null;
-    _ = napi_create_function(env, "encodeRemoveAttributeCall", 24, encodeRemoveAttributeCall_binding, null, &fn_remove_call);
-    _ = napi_set_named_property(env, exports, "encodeRemoveAttributeCall", fn_remove_call);
-
-    var fn_canonicalize: napi_value = null;
-    _ = napi_create_function(env, "canonicalize", 12, canonicalize_binding, null, &fn_canonicalize);
-    _ = napi_set_named_property(env, exports, "canonicalize", fn_canonicalize);
-
-    var fn_issue: napi_value = null;
-    _ = napi_create_function(env, "issueCredential", 15, issueCredential_binding, null, &fn_issue);
-    _ = napi_set_named_property(env, exports, "issueCredential", fn_issue);
-
-    var fn_mnemonic: napi_value = null;
-    _ = napi_create_function(env, "generateMnemonic", 16, generateMnemonic_binding, null, &fn_mnemonic);
-    _ = napi_set_named_property(env, exports, "generateMnemonic", fn_mnemonic);
-
-    var fn_val_m: napi_value = null;
-    _ = napi_create_function(env, "validateMnemonic", 16, validateMnemonic_binding, null, &fn_val_m);
-    _ = napi_set_named_property(env, exports, "validateMnemonic", fn_val_m);
-
-    var fn_wallet: napi_value = null;
-    _ = napi_create_function(env, "createWallet", 12, createWallet_binding, null, &fn_wallet);
-    _ = napi_set_named_property(env, exports, "createWallet", fn_wallet);
-
+    register(env, exports, "parseDID", parseDID_binding);
+    register(env, exports, "verifySignature", verifySignature_binding);
+    register(env, exports, "verifyDigestSignature", verifyDigestSignature_binding);
+    register(env, exports, "encodeDidAttribute", encodeDidAttribute_binding);
+    register(env, exports, "encodeAddAttributeCall", encodeAddAttributeCall_binding);
+    register(env, exports, "encodeUpdateAttributeCall", encodeUpdateAttributeCall_binding);
+    register(env, exports, "encodeRemoveAttributeCall", encodeRemoveAttributeCall_binding);
+    register(env, exports, "canonicalize", canonicalize_binding);
+    register(env, exports, "issueCredential", issueCredential_binding);
+    register(env, exports, "generateMnemonic", generateMnemonic_binding);
+    register(env, exports, "validateMnemonic", validateMnemonic_binding);
+    register(env, exports, "createWallet", createWallet_binding);
     return exports;
 }

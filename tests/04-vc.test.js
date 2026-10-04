@@ -61,12 +61,64 @@ test('Phase 3: W3C Verifiable Credential Issuance & Verification', () => {
   assert.strictEqual(sigHex.length, 128, "Signature must be 128 hex chars (64 bytes)");
 
   // Verify Credential
-  const canonicalVC = did0.canonicalize(credential);
-  const isValid = did0.verifySignature(stationWallet.publicKeyMultibase, canonicalVC, sigHex);
-  assert.strictEqual(isValid, true, "Credential signature must verify against station public key");
+  assert.strictEqual(did0.verifyCredential(credential, sigHex, stationWallet.publicKeyMultibase), true,
+    "Credential signature must verify against station public key");
+
+  // Key order in the input must not matter (JCS canonicalizes before hashing)
+  const reordered = Object.fromEntries(Object.entries(credential).reverse());
+  assert.strictEqual(did0.verifyCredential(reordered, sigHex, stationWallet.publicKeyMultibase), true);
 
   // Tamper detection
-  const tamperedVC = canonicalVC.replace("14.85", "148.50");
-  const isTamperedValid = did0.verifySignature(stationWallet.publicKeyMultibase, tamperedVC, sigHex);
-  assert.strictEqual(isTamperedValid, false, "Tampered credential payload must fail verification");
+  const tampered = { ...credential, credentialSubject: { ...credential.credentialSubject, energyDeliveredKWh: 148.5 } };
+  assert.strictEqual(did0.verifyCredential(tampered, sigHex, stationWallet.publicKeyMultibase), false,
+    "Tampered credential payload must fail verification");
+
+  // Wrong key
+  const other = did0.createWallet();
+  assert.strictEqual(did0.verifyCredential(credential, sigHex, other.publicKeyMultibase), false);
+
+  // A credential signature is over the SHA-256 digest, so raw verification must reject it
+  assert.strictEqual(
+    did0.verifySignature(stationWallet.publicKeyMultibase, did0.canonicalize(credential), sigHex),
+    false,
+    "Raw verification must not accept a digest signature"
+  );
+});
+
+test('Phase 3: issueCredential accepts documented key formats and rejects bad ones', () => {
+  const wallet = did0.createWallet();
+  const payload = { a: 1 };
+  const seed = Buffer.from(wallet.privateKeyHex, 'hex');
+  const pub = Buffer.from(wallet.publicKeyHex, 'hex');
+  const b58 = require('bs58');
+  const enc = b58.encode || b58.default.encode;
+
+  const reference = did0.issueCredential(payload, wallet.privateKeyHex);
+  assert.strictEqual(did0.issueCredential(payload, Buffer.concat([seed, pub]).toString('hex')), reference, '128-char hex');
+  assert.strictEqual(did0.issueCredential(payload, enc(seed)), reference, 'base58 seed');
+  assert.strictEqual(did0.issueCredential(payload, 'z' + enc(seed)), reference, 'z-prefixed base58 seed');
+  assert.strictEqual(did0.issueCredential(payload, enc(Buffer.concat([seed, pub]))), reference, 'base58 seed+pub');
+
+  for (const bad of ['', 'abcd', 'g'.repeat(64), '0'.repeat(63), 'z' + enc(Buffer.alloc(31, 1))]) {
+    assert.throws(() => did0.issueCredential(payload, bad), /ERR_|private key|Expected/i, `rejects ${JSON.stringify(bad)}`);
+  }
+  assert.throws(() => did0.issueCredential(payload, 12345), /private key/i);
+});
+
+test('Phase 3: canonicalize rejects malformed and oversize payloads', () => {
+  for (const bad of [
+    '', '{', '{"a":}', '[1,]', '{"a":1,}', '[,1]', '[1 2]', 'nope', '{"a":1} trailing', '{"a":NaN}', "{'a':1}",
+    '[01]', '[1.]', '[.5]', '[+1]', '[1e]', '[-]', '[--1]', '[1e999]', '[0x10]',
+    '{"a":1,"a":2}', '{"a":1,"\\u0061":2}', '"unterminated', '"raw\ttab"', '"\\ud800"', '"\\udc00x"', '"\\x"',
+  ]) {
+    assert.throws(() => did0.canonicalize(bad), undefined, `rejects ${JSON.stringify(bad)}`);
+  }
+  assert.throws(() => did0.canonicalize('"' + 'x'.repeat(70000) + '"'), /JSON string or object/);
+
+  // Deep nesting must produce an error, not exhaust the native stack
+  assert.throws(() => did0.canonicalize('['.repeat(20000) + ']'.repeat(20000)), /TooDeep/);
+  assert.throws(() => did0.canonicalize('{"a":'.repeat(5000) + '1' + '}'.repeat(5000)), /TooDeep/);
+  const ok = '['.repeat(100) + ']'.repeat(100);
+  assert.strictEqual(did0.canonicalize(ok), ok);
+  assert.throws(() => did0.canonicalize(undefined), /JSON string or object|Expected/);
 });

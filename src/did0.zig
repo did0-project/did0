@@ -7,6 +7,7 @@
 
 const std = @import("std");
 
+pub const base58 = @import("base58.zig");
 pub const peaq = @import("peaq/parser.zig");
 pub const scale = @import("scale.zig");
 pub const jcs = @import("jcs.zig");
@@ -40,6 +41,14 @@ pub const Document = struct {
 
     service: ?[]const Service = null,
 };
+
+test {
+    _ = base58;
+    _ = peaq;
+    _ = scale;
+    _ = jcs;
+    _ = wallet;
+}
 
 test "W3C structs compile successfully" {
     // A simple sanity check for the test runner
@@ -78,6 +87,6 @@ test "Wallet export check" {
     const allocator = fba.allocator();
 
     const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    const w = try wallet.createWalletFromMnemonic(allocator, mnemonic, "");
+    const w = try wallet.createWalletFromMnemonic(allocator, mnemonic, "", wallet.default_ss58_prefix);
     try std.testing.expect(std.mem.startsWith(u8, w.did, "did:peaq:5"));
 }

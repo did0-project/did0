@@ -16,7 +16,7 @@ const wallet = did0.createWallet();
 assert.ok(wallet.did.startsWith('did:peaq:5'), 'DID must start with did:peaq:5');
 assert.strictEqual(wallet.mnemonic.split(' ').length, 12, 'Default mnemonic should have 12 words');
 assert.strictEqual(typeof wallet.publicKeyMultibase, 'string');
-assert.strictEqual(wallet.publicKeyMultibase[0], 'z', 'Multibase public key must start with z');
+assert.ok(wallet.publicKeyMultibase.startsWith('z6Mk'), 'Multibase public key must be z6Mk...');
 console.log(`  ✅ DID Generated: ${wallet.did}`);
 
 // 2. RFC 8785 JSON Canonicalization Scheme (JCS)
@@ -45,7 +45,7 @@ const credPayload = {
 const sigHex = did0.issueCredential(credPayload, wallet.privateKeyHex);
 assert.strictEqual(sigHex.length, 128, 'Ed25519 signature hex must be 128 characters');
 
-const isValid = did0.verifySignature(wallet.publicKeyMultibase, did0.canonicalize(credPayload), sigHex);
+const isValid = did0.verifyCredential(credPayload, sigHex, wallet.publicKeyMultibase);
 assert.strictEqual(isValid, true, 'Cryptographic signature verification must succeed');
 console.log('  ✅ Ed25519 signature successfully verified');
 

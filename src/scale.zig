@@ -152,6 +152,16 @@ pub const Encoder = struct {
     }
 
     /// Writes raw bytes without length prefix (e.g. for fixed-size arrays).
+    /// Encodes an `Option<u32>`: `0x00` for none, `0x01` followed by the little-endian value otherwise.
+    pub fn writeOptionU32(self: *Encoder, val: ?u32) Error!void {
+        if (val) |v| {
+            try self.writeU8(1);
+            try self.writeU32(v);
+        } else {
+            try self.writeU8(0);
+        }
+    }
+
     pub fn writeRawBytes(self: *Encoder, bytes: []const u8) Error!void {
         if (self.remaining() < bytes.len) return Error.BufferTooSmall;
         @memcpy(self.buffer[self.offset..][0..bytes.len], bytes);
@@ -258,7 +268,8 @@ pub const DidAttribute = struct {
     did_account: [32]u8,
     name: []const u8,
     value: []const u8,
-    validity: u32,
+    /// `valid_for: Option<BlockNumber>` in the peaq-did pallet (BlockNumber is u32).
+    validity: ?u32,
 };
 
 /// Encodes a peaq DID attribute into SCALE bytecode using a stack/fixed buffer.
@@ -267,11 +278,11 @@ pub fn encodeDidAttribute(buffer: []u8, attr: DidAttribute) Error![]const u8 {
     try encoder.writeRawBytes(&attr.did_account);
     try encoder.writeSlice(attr.name);
     try encoder.writeSlice(attr.value);
-    try encoder.writeU32(attr.validity);
+    try encoder.writeOptionU32(attr.validity);
     return encoder.getWritten();
 }
 
-/// Encodes a Substrate dispatchable call for peaq-did `add_attribute(did_account, name, value, validity)`.
+/// Encodes a Substrate dispatchable call for peaq-did `add_attribute(did_account, name, value, valid_for: Option<BlockNumber>)`.
 pub fn encodeAddAttributeCall(
     buffer: []u8,
     pallet_index: u8,
@@ -279,7 +290,7 @@ pub fn encodeAddAttributeCall(
     did_account: [32]u8,
     name: []const u8,
     value: []const u8,
-    validity: u32,
+    validity: ?u32,
 ) Error![]const u8 {
     var encoder = Encoder.init(buffer);
     try encoder.writeU8(pallet_index);
@@ -287,11 +298,11 @@ pub fn encodeAddAttributeCall(
     try encoder.writeRawBytes(&did_account);
     try encoder.writeSlice(name);
     try encoder.writeSlice(value);
-    try encoder.writeU32(validity);
+    try encoder.writeOptionU32(validity);
     return encoder.getWritten();
 }
 
-/// Encodes a Substrate dispatchable call for peaq-did `update_attribute(did_account, name, value, validity)`.
+/// Encodes a Substrate dispatchable call for peaq-did `update_attribute(did_account, name, value, valid_for: Option<BlockNumber>)`.
 pub fn encodeUpdateAttributeCall(
     buffer: []u8,
     pallet_index: u8,
@@ -299,7 +310,7 @@ pub fn encodeUpdateAttributeCall(
     did_account: [32]u8,
     name: []const u8,
     value: []const u8,
-    validity: u32,
+    validity: ?u32,
 ) Error![]const u8 {
     return encodeAddAttributeCall(buffer, pallet_index, call_index, did_account, name, value, validity);
 }
@@ -469,6 +480,14 @@ test "SCALE peaq DID attribute and extrinsic encoding" {
         "{\"id\":\"did:peaq:0xaa\"}",
         1000000,
     );
+
+    // valid_for = Some(1_000_000) is encoded as 0x01 ++ u32 LE
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x40, 0x42, 0x0f, 0x00 }, call_bytes[call_bytes.len - 5 ..]);
+
+    // valid_for = None is a single 0x00 byte
+    const none_bytes = try encodeAddAttributeCall(&call_buf, 0x14, 0x00, pub_key, "n", "v", null);
+    try std.testing.expectEqual(@as(u8, 0x00), none_bytes[none_bytes.len - 1]);
+    try std.testing.expectEqual(@as(usize, 2 + 32 + 2 + 2 + 1), none_bytes.len);
 
     try std.testing.expectEqual(@as(u8, 0x14), call_bytes[0]);
     try std.testing.expectEqual(@as(u8, 0x00), call_bytes[1]);

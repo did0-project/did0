@@ -22,6 +22,11 @@ function isMusl() {
 }
 
 function loadNativeBinding() {
+  // 0. Explicit override (used by the test scripts so they always run the binary they just built)
+  if (process.env.DID0_BINDING_PATH) {
+    return require(path.resolve(process.env.DID0_BINDING_PATH));
+  }
+
   const platform = process.platform;
   const arch = process.arch;
   const musl = isMusl();
@@ -73,25 +78,25 @@ function loadNativeBinding() {
     }
   }
 
-  // 2. Try loading from prebuilds/ directory
-  if (prebuildName) {
-    const prebuildPath = path.join(__dirname, 'prebuilds', prebuildName);
-    if (fs.existsSync(prebuildPath)) {
-      try {
-        return require(prebuildPath);
-      } catch (e) {
-        // Continue to local dev fallback
-      }
-    }
-  }
-
-  // 3. Fallback to local root did0.node (built via `npm run build` or `zig build addon`)
+  // 2. A local build (`npm run build`) wins over any prebuilds/ left over from earlier release builds
   const localDevAddon = path.join(__dirname, 'did0.node');
   if (fs.existsSync(localDevAddon)) {
     try {
       return require(localDevAddon);
     } catch (e) {
       throw new Error(`[did0] Failed to load local native addon at ${localDevAddon}: ${e.message}`);
+    }
+  }
+
+  // 3. Try loading from prebuilds/ directory (populated by `npm run build:platforms`)
+  if (prebuildName) {
+    const prebuildPath = path.join(__dirname, 'prebuilds', prebuildName);
+    if (fs.existsSync(prebuildPath)) {
+      try {
+        return require(prebuildPath);
+      } catch (e) {
+        // Fall through to the diagnostic error
+      }
     }
   }
 
@@ -116,15 +121,20 @@ function issueCredential(payload, privateKeyHex) {
   return did0.issueCredential(jsonStr, privateKeyHex);
 }
 
+function verifyCredential(payload, signatureHex, publicKeyMultibase) {
+  return did0.verifyDigestSignature(publicKeyMultibase, canonicalize(payload), signatureHex);
+}
+
 function createWallet(options = {}) {
   const passphrase = options.passphrase || '';
   const mnemonic = options.mnemonic || '';
-  return did0.createWallet(passphrase, mnemonic);
+  return did0.createWallet(passphrase, mnemonic, options.ss58Prefix);
 }
 
 module.exports = {
   ...did0,
   canonicalize,
   issueCredential,
+  verifyCredential,
   createWallet,
 };

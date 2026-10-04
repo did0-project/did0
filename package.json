@@ -1,6 +1,6 @@
 {
   "name": "@did0/core",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Zero-Allocation W3C DID Resolver, Cryptographic Engine & DePIN Identity Toolkit in Zig",
   "main": "index.js",
   "module": "index.mjs",
@@ -19,14 +19,13 @@
     "index.js",
     "index.mjs",
     "index.d.ts",
-    "did0.node",
-    "prebuilds/",
     "build.zig",
     "build.zig.zon",
     "src/",
     "README.md",
     "LICENSE",
-    "RELEASE_STRATEGY.md"
+    "CHANGELOG.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "build": "npm run build:release",
@@ -35,7 +34,7 @@
     "build:platforms": "node scripts/build-platforms.js",
     "prepare:packages": "node scripts/prepare-platform-packages.js",
     "test:unit": "zig build test",
-    "test:integration": "node --test tests/*.test.js tests/*.test.mjs",
+    "test:integration": "DID0_BINDING_PATH=./did0.node node --test tests/*.test.js tests/*.test.mjs",
     "test": "npm run build:release && npm run test:unit && npm run test:integration",
     "benchmark": "node benchmark.js",
     "format": "zig fmt src/*.zig src/peaq/*.zig build.zig"
@@ -66,7 +65,7 @@
     "url": "https://github.com/did0-project/did0/issues"
   },
   "homepage": "https://did0.org",
-  "dependencies": {
+  "devDependencies": {
     "bs58": "^6.0.0"
   }
 }
