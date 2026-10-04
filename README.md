@@ -2,312 +2,202 @@
 
 [![CI](https://github.com/did0-project/did0/actions/workflows/ci.yml/badge.svg)](https://github.com/did0-project/did0/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@did0/core.svg)](https://www.npmjs.com/package/@did0/core)
-[![PyPI](https://img.shields.io/pypi/v/did0-py.svg)](https://pypi.org/project/did0-py/)
-[![Crates.io](https://img.shields.io/crates/v/did0.svg)](https://crates.io/crates/did0)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Zig](https://img.shields.io/badge/Zig-0.16.0-orange.svg)](https://ziglang.org/)
 
-A zero-allocation Decentralized Identifier (DID) resolver, cryptographic verification engine, and identity toolkit built in **Zig** and optimized for **peaq Network** and enterprise **DePIN** (Decentralized Physical Infrastructure Networks).
+A fast native identity toolkit for [peaq](https://www.peaq.network/) and other Substrate-based DePIN networks, written in Zig and exposed to Node.js through Node-API.
 
-**did0** bridges native C-level execution speeds into Node.js, NestJS, and edge microservices via Node-API (N-API). By executing all schema parsing, SCALE encoding, JSON canonicalization (JCS), and cryptographic operations directly on native stack frames using Zig's `FixedBufferAllocator`, **did0** eliminates V8 garbage collection pauses and prevents private key leaks in memory dumps.
+> **Status: alpha, not security-audited.** The API will change before 1.0. Do not use it to protect keys that control real value until it has had an independent review. See [SECURITY.md](SECURITY.md).
 
----
+## What it does
 
-## Architecture & Design Principles
-
-```
-  ┌─────────────────────────────────────────────────────────────┐
-  │                 Node.js / NestJS / TypeScript               │
-  │                  (Zero-Copy N-API Bridge)                   │
-  └──────────────────────────────┬──────────────────────────────┘
-                                 │
-  ┌──────────────────────────────▼──────────────────────────────┐
-  │                        did0 Engine                          │
-  │                   (Zig Native Binary)                       │
-  ├──────────────────────────────┬──────────────────────────────┤
-  │      1. Resolution & Crypto  │   2. Substrate SCALE Codec   │
-  │   - Stack-allocated JSON AST │   - Compact Ints (Single/    │
-  │   - Base58 'z' Multibase     │     Two/Four/Big modes)      │
-  │   - Native Ed25519 Engine    │   - peaq DID Extrinsics      │
-  ├──────────────────────────────┼──────────────────────────────┤
-  │    3. Verifiable Credentials │    4. Native Key Management  │
-  │   - RFC 8785 JCS Canonical  │   - BIP-39 Mnemonics (12/24) │
-  │   - UTF-16 Code Unit Sorting │   - PBKDF2-HMAC-SHA512 Seed  │
-  │   - In-place Deterministic   │   - SS58 Address (Prefix 42) │
-  │     Proof Generation         │   - did:peaq Derivation      │
-  └─────────────────────────────────────────────────────────────┘
-```
-
-1. **Zero Heap Allocations on Hot Paths**: When parsing incoming DID documents, canonicalizing payloads, or serializing SCALE frames, memory is carved out of fixed, caller-owned stack buffers. The heap delta remains **0.00 MB**.
-2. **Off-Heap Cryptographic Isolation**: BIP-39 seed derivation and Ed25519 private key operations occur completely outside the V8 JavaScript garbage-collected heap, shielding credentials from inspection.
-3. **Strict W3C & Substrate Alignment**: Produces standards-compliant W3C DID documents, RFC 8785 canonical JSON, and Substrate SCALE-encoded transaction payloads ready for peaq RPC nodes.
-
----
-
-## Core Pillars & Modules
-
-| Module | Scope | Standard / Specification |
+| Area | What you get | Standards |
 | :--- | :--- | :--- |
-| **Resolution & Verification** | Parse W3C DID Documents & verify device signatures | W3C DID Core 1.0, Multibase (`base58btc`), Ed25519 |
-| **SCALE Codec** | Serializes peaq DID attributes and dispatchable calls | Substrate SCALE Codec Specification |
-| **Verifiable Credentials** | Canonicalization and deterministic credential signing | RFC 8785 (JCS), W3C Verifiable Credentials Data Model v1.1 |
-| **Key Management** | Mnemonic generation, PBKDF2 seed, and SS58 addresses | BIP-0039, Substrate SS58 Registry (Prefix 42) |
+| **DID documents** | Parse a W3C DID document and read its `id` and first `publicKeyMultibase` | W3C DID Core 1.0 |
+| **Signatures** | Verify Ed25519 signatures with `z6Mk…` / bare-32-byte multibase keys | RFC 8032, W3C `Ed25519VerificationKey2020` |
+| **Credentials** | Canonicalize JSON, sign it, and verify it | RFC 8785 (JCS) |
+| **peaq on-chain DID** | SCALE-encode `add_attribute`, `update_attribute` and `remove_attribute` calls | [`peaq-pallet-did`](https://github.com/peaqnetwork/peaq-pallet-did) |
+| **Wallets** | BIP-39 mnemonics → Ed25519 key → SS58 address → `did:peaq:` identifier | BIP-39, Substrate key derivation, SS58 |
 
----
+Everything runs in native code on fixed-size stack buffers: there is no heap allocation on the hot paths, and input that does not fit is rejected, never truncated.
 
-## Installation
+### What it is not
 
-### Prerequisites
-- **Node.js**: `v20.0.0` or higher
-- **Zig**: `0.16.0` or higher ([Download Zig](https://ziglang.org/download/))
+- It is **not** a full Substrate client. It builds call bytes; it does not sign extrinsics, talk to RPC nodes or track nonces. Use [`@polkadot/api`](https://polkadot.js.org/docs/api/) or peaq's own SDKs for that, and feed them the bytes from here.
+- It does **not** implement a W3C Data Integrity cryptosuite. `issueCredential` signs `SHA-256(JCS(credential))` with Ed25519 and returns a bare signature. That scheme is specific to did0 (documented below).
+- It does **not** support sr25519 or secp256k1/EVM keys yet (see the [roadmap](ROADMAP.md)).
+- It does **not** resolve DIDs over the network. Fetch the document yourself and pass it to `parseDID`.
 
-### Build from Source
+## Install
+
 ```bash
-git clone https://github.com/kiruthikraaj/did0.git
+npm install @did0/core
+```
+
+Requires Node.js 20+. Prebuilt binaries are installed automatically for:
+
+| OS | CPU | libc |
+| :--- | :--- | :--- |
+| macOS | arm64, x64 | n/a |
+| Linux | x64, arm64 | glibc, musl (Alpine) |
+
+Windows is not supported yet. If your platform has no binary, the loader throws an error that names the missing package (check that you did not install with `--no-optional`).
+
+### Build from source
+
+Requires [Zig 0.16.0](https://ziglang.org/download/).
+
+```bash
+git clone https://github.com/did0-project/did0.git
 cd did0
 npm install
-npm run build
+npm test        # builds, runs the Zig and Node test suites
 ```
 
-This compiles `src/napi.zig` in `ReleaseFast` mode and outputs `did0.node`.
+## Usage
 
----
+### Wallets
 
-## API Reference & Usage
+```js
+const { createWallet, generateMnemonic, validateMnemonic } = require('@did0/core');
 
-### 1. Key Management & Wallet Derivation (Phase 4)
+const wallet = createWallet();            // new random 12-word wallet
+wallet.did;                               // did:peaq:5…
+wallet.ss58Address;                       // 5…
+wallet.publicKeyMultibase;                // z6Mk…  (W3C Ed25519VerificationKey2020)
+wallet.mnemonic;                          // keep this secret
+wallet.privateKeyHex;                     // keep this secret
 
-Generate cryptographically secure BIP-39 mnemonics, compute PBKDF2 seeds, and derive peaq Ed25519 keypairs and Substrate SS58 addresses:
+// Restore, optionally with a passphrase
+createWallet({ mnemonic: wallet.mnemonic, passphrase: '' });
 
-```typescript
-import { createWallet, generateMnemonic, validateMnemonic } from '@did0/core';
+// peaq's registered SS58 prefix is 1221; the default is 42 (generic Substrate)
+createWallet({ mnemonic: wallet.mnemonic, ss58Prefix: 1221 });
 
-// Generate a random 12-word or 24-word mnemonic
-const mnemonic = generateMnemonic(12);
-console.log("Valid?", validateMnemonic(mnemonic)); // true
-
-// Create a new wallet from scratch
-const wallet = createWallet();
-console.log("DID:", wallet.did);                        // e.g. did:peaq:5GxKgBuq8GpYQ2YSUhr8Jj...
-console.log("SS58 Address:", wallet.ss58Address);        // e.g. 5GxKgBuq8GpYQ2YSUhr8Jj...
-console.log("Public Key (Multibase):", wallet.publicKeyMultibase); // e.g. zFZNxRDJStGRD2Gn...
-
-// Restore an existing wallet using a mnemonic and optional passphrase
-const restored = createWallet({
-  mnemonic: "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-  passphrase: ""
-});
+validateMnemonic(generateMnemonic(24));   // true
 ```
 
----
+Key derivation follows Substrate tooling: the Ed25519 seed is PBKDF2-HMAC-SHA512 over the mnemonic's **entropy** (as in `substrate-bip39` and polkadot-js `mnemonicToMiniSecret`), not over the phrase text as plain BIP-39 does. The phrase `abandon … about` gives mini-secret `4ed8d4b1…97e2` and public key `9125f505…b294`; this is covered by the tests. Derivation paths (`//hard`, `/soft`) are not supported yet.
 
-### 2. W3C Verifiable Credentials & RFC 8785 JCS (Phase 3)
+> `mnemonic` and `privateKeyHex` are returned to JavaScript as strings. They are derived in native code and the native copies are wiped, but the JS strings live on the V8 heap and cannot be zeroed. Treat the process memory as sensitive.
 
-Canonicalize JSON according to RFC 8785 (lexicographical UTF-16 code unit property sorting) and sign Verifiable Credentials:
+### Signing and verifying credentials
 
-```typescript
-import { canonicalize, issueCredential, verifySignature } from '@did0/core';
+```js
+const { createWallet, issueCredential, verifyCredential } = require('@did0/core');
 
+const issuer = createWallet();
 const credential = {
-  "@context": [
-    "https://www.w3.org/2018/credentials/v1",
-    "https://peaq.network/credentials/depin/v1"
-  ],
-  id: "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6",
-  type: ["VerifiableCredential", "DePINChargingReceipt"],
-  issuer: wallet.did,
-  issuanceDate: "2026-10-04T10:20:00Z",
-  credentialSubject: {
-    id: "did:peaq:5DroneAutopilotDelta443322",
-    energyDeliveredKWh: 14.85,
-    sessionCompleted: true
-  }
+  '@context': ['https://www.w3.org/2018/credentials/v1'],
+  type: ['VerifiableCredential', 'ChargingReceipt'],
+  issuer: issuer.did,
+  issuanceDate: '2026-10-04T10:20:00Z',
+  credentialSubject: { id: 'did:peaq:5EVVehicle…', energyDeliveredKWh: 14.85 },
 };
 
-// 1. Issue and sign the credential (canonicalizes + SHA-256 + Ed25519)
-const signatureHex = issueCredential(credential, wallet.privateKeyHex);
-
-// 2. Canonicalize for independent transport or verification
-const canonicalVC = canonicalize(credential);
-
-// 3. Verify signature against the issuer's multibase public key
-const isValid = verifySignature(wallet.publicKeyMultibase, canonicalVC, signatureHex);
-console.log("Verified:", isValid); // true
+const signature = issueCredential(credential, issuer.privateKeyHex);   // 128 hex chars
+verifyCredential(credential, signature, issuer.publicKeyMultibase);    // true
 ```
 
----
+The scheme is: `signature = Ed25519(SHA-256(JCS(credential)))`. Key order and whitespace of the input do not matter; any change to the content makes verification fail. Because it is not a Data Integrity proof, other VC libraries will not verify these signatures out of the box; to interoperate, verify with `verifyDigestSignature(publicKeyMultibase, canonicalJson, signature)` or reimplement the three steps above.
 
-### 3. Substrate SCALE Codec for peaq Blockchain (Phase 2)
+The canonicalizer is strict: it rejects duplicate keys, trailing commas, invalid numbers, raw control characters, lone surrogates, and nesting deeper than 128 levels.
 
-Construct Substrate-compatible bytecodes for on-chain DID creation and attribute updates without heavy JavaScript libraries:
+### Verifying a raw Ed25519 signature
 
-```typescript
-import { encodeDidAttribute, encodeAddAttributeCall } from '@did0/core';
+```js
+const { verifySignature } = require('@did0/core');
 
-const didAccountHex = wallet.publicKeyHex; // 32-byte AccountId
-const attributeName = "did/pubkey";
-const attributeValue = wallet.did;
-const validityBlocks = 5_000_000;
+verifySignature(publicKeyMultibase, message /* string | Buffer */, signatureHex); // true | false
+```
 
-// Encode raw DID attribute payload
-const attributeBytes = encodeDidAttribute(
-  didAccountHex,
-  attributeName,
-  attributeValue,
-  validityBlocks
-);
+`verifySignature` checks the signature over the message bytes exactly. Signatures from `issueCredential` sign a digest and are **rejected** here by design; use `verifyCredential`. Malformed keys or signatures throw; a well-formed but wrong signature returns `false`.
 
-// Encode complete Substrate pallet dispatchable call (peaq-did add_attribute)
-const callBytes = encodeAddAttributeCall(
-  12, // palletIndex
-  0,  // callIndex
-  didAccountHex,
-  attributeName,
-  attributeValue,
-  validityBlocks
+### peaq on-chain DID calls
+
+```js
+const { createWallet, encodeAddAttributeCall } = require('@did0/core');
+
+const wallet = createWallet();
+const call = encodeAddAttributeCall(
+  PALLET_INDEX,        // from the runtime metadata of the chain you target
+  0,                   // peaq-did: add_attribute = 0, update_attribute = 1, remove_attribute = 3
+  wallet.publicKeyHex, // the DID's AccountId (32 bytes, hex)
+  'did/pubkey',        // attribute name (max 255 bytes)
+  wallet.did,          // attribute value (max 8191 bytes)
+  1_000_000            // valid_for in blocks, or null for no expiry
 );
 ```
 
----
+This returns the SCALE-encoded call (`pallet ++ call ++ did_account ++ name ++ value ++ Option<valid_for>`), matching [`peaq-pallet-did`](https://github.com/peaqnetwork/peaq-pallet-did). Pallet indexes differ per runtime; always read yours from the chain metadata. This library does not fetch it. Signing and submitting the extrinsic is up to you.
 
-### 4. W3C DID Document Resolution & Verification (Phase 1)
+### Parsing a DID document
 
-Parse incoming peaq DID Documents with zero heap allocations:
+```js
+const { parseDID } = require('@did0/core');
 
-```typescript
-import { parseDID } from '@did0/core';
-
-const rawDocument = JSON.stringify({
-  id: "did:peaq:5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
-  verificationMethod: [
-    {
-      id: "did:peaq:5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY#keys-1",
-      type: "Ed25519VerificationKey2020",
-      controller: "did:peaq:5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY",
-      publicKeyMultibase: "zH3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV"
-    }
-  ]
-});
-
-// Executes on the native stack with zero allocation
-const doc = parseDID(rawDocument);
-console.log(doc.id);                 // "did:peaq:5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-console.log(doc.publicKeyMultibase); // "zH3C2AVvLMv6gmMNam3uVAjZpfkcJCwDwnZn6z3wXmqPV"
+const doc = parseDID(jsonString);   // documents up to 4095 bytes
+doc.id;                             // "did:peaq:5…"
+doc.publicKeyMultibase;             // first verification method's key, if present
 ```
 
----
+### TypeScript
 
-## End-to-End DePIN Machine Flow
+Types ship with the package (`index.d.ts`) and the package works with both `import` and `require`.
 
-Here is how an IoT device (e.g., an EV charging station) executes its complete identity lifecycle in under 5 milliseconds:
+## Performance
 
-```typescript
-import { createWallet, issueCredential, canonicalize, verifySignature, encodeDidAttribute } from '@did0/core';
+`npm run benchmark` reproduces this table. Measured on an Apple M-series laptop, Node 22, 100k iterations (fewer for the slow rows); your numbers will differ.
 
-// 1. Hardware Gateway initializes identity off-heap
-const gateway = createWallet();
+| Operation | Latency (µs) | Ops/sec |
+| :--- | ---: | ---: |
+| `parseDID` | 1.0 | ~970,000 |
+| `canonicalize` (credential) | 1.9 | ~516,000 |
+| baseline: `JSON.parse` + sorted `JSON.stringify` | 3.0 | ~336,000 |
+| `encodeDidAttribute` | 0.4 | ~2,500,000 |
+| `verifySignature` (Ed25519) | 52.6 | ~19,000 |
+| baseline: `node:crypto` Ed25519 verify | 85.4 | ~11,700 |
+| `issueCredential` | 86.4 | ~11,600 |
+| `verifyCredential` | 51.7 | ~19,300 |
+| `createWallet` (PBKDF2, 2048 rounds) | 3,581 | ~280 |
+| baseline: `node:crypto` PBKDF2 | 684 | ~1,460 |
 
-// 2. Machine generates and signs a verifiable charging session receipt
-const receipt = {
-  type: ["VerifiableCredential", "DePINChargingReceipt"],
-  issuer: gateway.did,
-  issuanceDate: new Date().toISOString(),
-  credentialSubject: {
-    stationId: "peaq-station-eu-01",
-    vehicleId: "did:peaq:5EVVehicleClient9988",
-    kwhDelivered: 42.5
-  }
-};
-const sig = issueCredential(receipt, gateway.privateKeyHex);
+The honest summary: parsing, canonicalization and SCALE encoding are noticeably faster than pure JavaScript, Ed25519 verification is competitive with OpenSSL through `node:crypto`, and wallet derivation is about 5× **slower** than OpenSSL's PBKDF2 (it is a one-off operation per identity, so this rarely matters).
 
-// 3. Client verifies authenticity using public multibase key
-const verified = verifySignature(gateway.publicKeyMultibase, canonicalize(receipt), sig);
-
-// 4. Gateway anchors identity attribute to peaq blockchain
-const txPayload = encodeDidAttribute(gateway.publicKeyHex, "did/pubkey", gateway.did, 1000000);
-```
-
----
-
-## Benchmarks
-
-Measured via 100,000 continuous iterations on Apple Silicon (M-series, `ReleaseFast`):
-
-| Operation | Latency | Throughput | Heap Delta |
-| :--- | :--- | :--- | :--- |
-| **N-API DID Document Parsing** | 0.86 µs | **1,039,000+ ops/sec** | 0.04 MB |
-| **Substrate SCALE Attribute Encoding** | 7.0 µs | **140,000+ ops/sec** | 0.00 MB |
-| **RFC 8785 (JCS) Canonicalization** | 15.0 µs | **65,000+ ops/sec** | 0.00 MB |
-| **Verifiable Credential Issuance** | 120.0 µs | **8,300+ ops/sec** | 0.00 MB |
-| **Native Ed25519 Verification** | 107.0 µs | **21,500+ ops/sec** | 0.00 MB |
-| **Full HD Wallet Derivation (2048 PBKDF2 rounds)** | 3.02 ms | **330+ ops/sec** | 0.00 MB |
-
----
-
-## Project Structure
+## Project layout
 
 ```
-did0/
-├── .github/
-│   └── workflows/
-│       └── ci.yml               # GitHub Actions CI matrix (macOS & Ubuntu)
-├── src/
-│   ├── did0.zig                 # Root library exports & core W3C schemas
-│   ├── napi.zig                 # Node-API FFI bindings and zero-copy marshalling
-│   ├── main.zig                 # Native CLI demonstration tool
-│   ├── scale.zig                # Substrate SCALE serialization engine
-│   ├── jcs.zig                  # RFC 8785 JSON Canonicalization Scheme engine
-│   ├── wallet.zig               # BIP-39 mnemonic, PBKDF2 seed & SS58 derivations
-│   ├── bip39_words.zig          # Constant-memory BIP-39 English wordlist (2048 words)
-│   └── peaq/
-│       └── parser.zig           # FixedBufferAllocator DID Document parser
-├── tests/
-│   ├── 01-parse.test.js         # W3C schema parsing tests
-│   ├── 02-crypto.test.js        # Multibase Ed25519 verification tests
-│   ├── 03-scale.test.js         # Substrate SCALE codec tests
-│   ├── 04-vc.test.js            # RFC 8785 vectors & credential issuance tests
-│   └── 05-wallet.test.js        # BIP-39 & full cross-phase integration tests
-├── build.zig                    # Zig build system configuration
-├── build.zig.zon                # Zig package manifest
-├── index.js                     # High-level Node.js entry point
-├── index.d.ts                   # Complete TypeScript declarations & JSDoc
-├── benchmark.js                 # Throughput & memory benchmark runner
-├── LICENSE                      # MIT License
-├── package.json                 # Node package configuration
-└── README.md                    # Project documentation
+src/
+  napi.zig          Node-API bindings (argument validation, no truncation)
+  base58.zig        Base58 codec
+  peaq/parser.zig   DID document parsing, multibase keys, Ed25519 verification
+  scale.zig         SCALE encoder and peaq-did call builders
+  jcs.zig           RFC 8785 JSON canonicalization
+  wallet.zig        BIP-39, Substrate key derivation, SS58
+  did0.zig          Library root (Zig module "did0")
+  main.zig          Small CLI demo (`zig build run`)
+index.js / .mjs / .d.ts   Node entry points and types
+tests/              Known-answer, negative, and differential tests
+scripts/            Multi-platform build and publish helpers
 ```
 
----
+You can also use the Zig modules directly: add the package to `build.zig.zon` and `@import("did0")`.
 
-## Testing & Quality Assurance
+## Testing
 
-### Run All Unit & Integration Tests
 ```bash
-npm test
+npm test                  # build + Zig unit tests + Node integration tests
+npm run test:unit         # zig build test
+npm run test:integration  # Node tests against ./did0.node
+npm run benchmark         # node --expose-gc benchmark.js
 ```
 
-### Run Only Zig Native Unit Tests
-```bash
-npm run test:unit
-```
+The suite includes RFC 8032 and RFC 8785 vectors, a published Substrate mini-secret vector, SS58 vectors for Polkadot and Kusama, and differential tests that compare the canonicalizer against an independent JavaScript implementation on thousands of random documents. It has **not** been fuzzed beyond that or independently audited.
 
-### Run Node.js Integration Tests
-```bash
-npm run test:integration
-```
+## Contributing
 
-### Run Performance Benchmarks
-```bash
-npm run benchmark
-```
-
-### Run Code Formatter
-```bash
-npm run format
-```
-
----
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Planned work is in [ROADMAP.md](ROADMAP.md).
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+[MIT](LICENSE)

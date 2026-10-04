@@ -1,33 +1,40 @@
 # Security Policy
 
-## Supported Versions
+## Status
 
-| Version | Supported          |
-| :---    | :---               |
-| 0.1.x   | :white_check_mark: |
+did0 is **alpha software and has not been independently audited**. Do not use it to protect keys that control real value until it has been reviewed. Pin exact versions and read the [changelog](CHANGELOG.md) before upgrading: key-derivation and encoding behaviour changed between 0.1.x and 0.2.0.
 
----
+## Supported versions
 
-## Cryptographic Guarantees & Threat Model
+| Version | Supported |
+| :--- | :--- |
+| 0.2.x | yes |
+| 0.1.x | no. Derives different keys from the same mnemonic; deprecated on npm. |
 
-**did0** is designed for high-assurance DePIN infrastructure and edge hardware gateways. The core engine adheres to the following cryptographic invariants:
+## What the library tries to guarantee
 
-1. **Zero-Allocation Stack Execution**: All parsing, canonicalization, and SCALE serialization occur within fixed caller-allocated buffers on the stack (`FixedBufferAllocator`). No sensitive data is allocated on the heap where it might persist across garbage collection cycles.
-2. **Memory Scrubbing**: Sensitive cryptographic buffers (including BIP-39 entropy, mnemonic buffers, PBKDF2 intermediate seeds, and Ed25519 mini-secrets) are zeroed using `std.crypto.secureZero` before stack frames exit.
-3. **Constant-Time Verification**: Ed25519 signature checks leverage constant-time field arithmetic in Zig's standard cryptographic library to mitigate timing side-channel attacks.
+- **Memory safety:** parsing, canonicalization and encoding operate on fixed-size buffers; oversized or malformed input is rejected with an error instead of being truncated. The Node-API layer validates every argument.
+- **Standard primitives:** Ed25519, SHA-256, HMAC/PBKDF2-SHA512 and Blake2b come from the Zig standard library. did0 does not implement its own curve or hash code. Constant-time behaviour is inherited from Zig's implementations and has not been separately verified.
+- **Scratch-buffer hygiene:** native stack buffers that held entropy, seeds, mnemonics or secret keys are cleared with `std.crypto.secureZero` before the function returns.
+- **Strict JSON handling for signing:** the canonicalizer rejects duplicate keys, trailing commas, non-standard numbers, raw control characters, lone surrogates and excessive nesting, so two parsers cannot disagree about what was signed.
 
----
+## What it does not guarantee
 
-## Reporting a Vulnerability
+- **Secrets exposed to JavaScript:** `createWallet` returns `mnemonic` and `privateKeyHex` as JavaScript strings. These live on the V8 heap, can be copied by the engine and appear in heap snapshots and core dumps, and cannot be wiped. The same applies to the private key you pass to `issueCredential`. If this matters for your deployment, do not use the JavaScript wallet API for production keys.
+- **No side-channel hardening beyond the standard library.**
+- **No protection against a compromised host process or malicious dependencies.**
+- **Interoperability is not formally certified.** Key derivation, SS58 and SCALE output are tested against published vectors and the `peaq-pallet-did` source, but not against a live chain in CI.
 
-If you discover a security vulnerability within `did0`, please disclose it responsibly. **Do not open a public issue.**
+## Reporting a vulnerability
 
-Instead, please send an encrypted or private advisory email to:
-- **Security Contact**: `security@did0.org` (or directly via GitHub Security Advisories)
+Please **do not open a public issue** for security problems.
 
-### Please Include:
-- A description of the vulnerability and its potential impact.
-- Steps to reproduce or a minimal proof-of-concept (PoC).
-- Affected version(s) and operating system / architecture details.
+Report privately through [GitHub Security Advisories](https://github.com/did0-project/did0/security/advisories/new) or by email to `security@did0.org`.
 
-We commit to acknowledging your report within **48 hours** and providing regular progress updates until a patch is released.
+Include:
+
+- a description of the issue and its impact,
+- steps to reproduce or a proof of concept,
+- the affected version and platform.
+
+We aim to acknowledge reports within 3 working days and to share a fix or mitigation plan within 14 days. We will credit reporters in the release notes unless they prefer to stay anonymous.
