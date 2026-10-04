@@ -30,6 +30,7 @@
     "build:debug": "zig build addon && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
     "build:release": "zig build addon -Doptimize=ReleaseFast && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
     "build:platforms": "node scripts/build-platforms.js",
+    "prepare:packages": "node scripts/prepare-platform-packages.js",
     "test:unit": "zig build test",
     "test:integration": "node --test tests/*.test.js tests/*.test.mjs",
     "test": "npm run test:unit && npm run test:integration",

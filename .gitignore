@@ -3,4 +3,6 @@ node_modules/
 zig-out/
 did0.node
 prebuilds/
+npm/
+checksums.txt
 .DS_Store
