@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     const GREEN = "\x1b[32m";
     const RESET = "\x1b[0m";
 
-    std.debug.print("{s}{s}did0 v0.1.0{s} - Zero-Allocation DID Resolver\n\n", .{ BOLD, CYAN, RESET });
+    std.debug.print("{s}{s}did0 v0.1.1{s} - Zero-Allocation DID Resolver\n\n", .{ BOLD, CYAN, RESET });
 
     // Simulated JSON payload from a peaq network RPC node
     const payload =
