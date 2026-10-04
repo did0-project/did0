@@ -129,4 +129,23 @@ function preparePackages() {
   console.log(`\n✨ Successfully prepared all ${PLATFORMS.length} platform packages in npm/`);
 }
 
+/**
+ * Adds the platform packages to the root package.json as optionalDependencies.
+ * They are not committed because the packages do not exist on the registry
+ * until the release job publishes them, which would break `npm ci`.
+ */
+function injectOptionalDependencies() {
+  const pkgPath = path.join(ROOT_DIR, 'package.json');
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+  pkg.optionalDependencies = {};
+  for (const plat of PLATFORMS) {
+    pkg.optionalDependencies[plat.pkgName] = pkg.version;
+  }
+  fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
+  console.log(`  🔗 Injected ${PLATFORMS.length} optionalDependencies into package.json`);
+}
+
 preparePackages();
+if (process.argv.includes('--inject-optional')) {
+  injectOptionalDependencies();
+}

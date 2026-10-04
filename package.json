@@ -68,13 +68,5 @@
   "homepage": "https://did0.org",
   "dependencies": {
     "bs58": "^6.0.0"
-  },
-  "optionalDependencies": {
-    "@did0/binding-darwin-arm64": "0.1.0",
-    "@did0/binding-darwin-x64": "0.1.0",
-    "@did0/binding-linux-x64-gnu": "0.1.0",
-    "@did0/binding-linux-x64-musl": "0.1.0",
-    "@did0/binding-linux-arm64-gnu": "0.1.0",
-    "@did0/binding-linux-arm64-musl": "0.1.0"
   }
 }

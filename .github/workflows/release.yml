@@ -93,6 +93,9 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      - name: Link platform packages as optionalDependencies
+        run: node scripts/prepare-platform-packages.js --inject-optional
+
       - name: Publish Core did0 Package to npm
         run: npm publish --provenance --access public
         env:
