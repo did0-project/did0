@@ -3,23 +3,35 @@
   "version": "0.1.0",
   "description": "Zero-Allocation W3C DID Resolver, Cryptographic Engine & DePIN Identity Toolkit in Zig",
   "main": "index.js",
+  "module": "index.mjs",
   "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.js"
+    }
+  },
   "files": [
     "index.js",
+    "index.mjs",
     "index.d.ts",
     "did0.node",
+    "prebuilds/",
     "build.zig",
     "build.zig.zon",
     "src/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "RELEASE_STRATEGY.md"
   ],
   "scripts": {
     "build": "npm run build:release",
     "build:debug": "zig build addon && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
     "build:release": "zig build addon -Doptimize=ReleaseFast && (cp zig-out/lib/libdid0.dylib ./did0.node 2>/dev/null || cp zig-out/lib/libdid0.so ./did0.node 2>/dev/null || true)",
+    "build:platforms": "node scripts/build-platforms.js",
     "test:unit": "zig build test",
-    "test:integration": "node --test tests/*.test.js",
+    "test:integration": "node --test tests/*.test.js tests/*.test.mjs",
     "test": "npm run test:unit && npm run test:integration",
     "benchmark": "node benchmark.js",
     "format": "zig fmt src/*.zig src/peaq/*.zig build.zig"
@@ -52,5 +64,13 @@
   "homepage": "https://github.com/kiruthikraaj/did0#readme",
   "dependencies": {
     "bs58": "^6.0.0"
+  },
+  "optionalDependencies": {
+    "@did0/binding-darwin-arm64": "0.1.0",
+    "@did0/binding-darwin-x64": "0.1.0",
+    "@did0/binding-linux-x64-gnu": "0.1.0",
+    "@did0/binding-linux-x64-musl": "0.1.0",
+    "@did0/binding-linux-arm64-gnu": "0.1.0",
+    "@did0/binding-linux-arm64-musl": "0.1.0"
   }
 }
