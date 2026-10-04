@@ -1,9 +1,22 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Ed25519 = std.crypto.sign.Ed25519;
 const Blake2b512 = std.crypto.hash.blake2.Blake2b512;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha512 = std.crypto.auth.hmac.sha2.HmacSha512;
 const bip39_words = @import("bip39_words.zig");
+
+fn fillRandomBytes(buf: []u8) void {
+    if (comptime builtin.os.tag.isDarwin()) {
+        std.c.arc4random_buf(buf.ptr, buf.len);
+    } else if (comptime builtin.os.tag == .linux) {
+        _ = std.os.linux.getrandom(buf.ptr, buf.len, 0);
+    } else {
+        const file = std.fs.openFileAbsolute("/dev/urandom", .{}) catch return;
+        defer file.close();
+        _ = file.readAll(buf) catch return;
+    }
+}
 
 pub const Error = error{
     BufferTooSmall,
@@ -146,12 +159,12 @@ pub fn generateRandomMnemonic(out_buf: []u8, word_count: usize) Error![]const u8
     if (word_count == 12) {
         var entropy: [16]u8 = undefined;
         defer std.crypto.secureZero(u8, &entropy);
-        std.c.arc4random_buf(entropy[0..].ptr, entropy.len);
+        fillRandomBytes(&entropy);
         return generateMnemonic(out_buf, &entropy);
     } else if (word_count == 24) {
         var entropy: [32]u8 = undefined;
         defer std.crypto.secureZero(u8, &entropy);
-        std.c.arc4random_buf(entropy[0..].ptr, entropy.len);
+        fillRandomBytes(&entropy);
         return generateMnemonic(out_buf, &entropy);
     } else {
         return Error.InvalidWordCount;
