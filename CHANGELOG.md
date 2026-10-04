@@ -2,7 +2,7 @@
 
 All notable changes are documented here. The project follows [Semantic Versioning](https://semver.org/); while the version is below 1.0, minor releases may contain breaking changes.
 
-## [0.1.0] - 2026-10-04
+## [0.2.0] - 2026-10-04
 
 Initial public release. Alpha quality and not security-audited; see [SECURITY.md](SECURITY.md).
 

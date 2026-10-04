@@ -8,7 +8,7 @@ did0 is **alpha software and has not been independently audited**. Do not use it
 
 | Version | Supported |
 | :--- | :--- |
-| 0.1.x | yes |
+| 0.2.x | yes |
 
 ## What the library tries to guarantee
 
